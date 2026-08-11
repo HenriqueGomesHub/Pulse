@@ -5,7 +5,7 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 
 | Phase | Gate | Date |
 |---|---|---|
-| 1 — skeleton + data in | **BLOCKED** — verification could not run | 2026-08-11 |
+| 1 — skeleton + data in | **PASSED** (amended gate) | 2026-08-11 |
 | 2 — features + one dumb strategy | not started | — |
 | 3 — dashboard | not started | — |
 | 4 — full strategy set + stats | not started | — |
@@ -13,9 +13,100 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 
 ---
 
-## Phase 1 — skeleton + data in
+## Phase 1 — GATE PASSED 2026-08-11 16:16 UTC (amended gate)
 
-**Gate: NOT PASSED. Run halted. Human action required.**
+All four amended criteria met against the live Railway database.
+
+### (a) Migrations apply cleanly — PASS
+
+`npm run migrate` → `applied 001_init.sql`. Schema verified by querying the catalog:
+
+- **tables (10):** `tickers`, `social_snapshots`, `market_snapshots`, `features`, `strategies`,
+  `signals`, `trades`, `strategy_stats`, `evolution_log`, `schema_migrations` — all 9 spec
+  tables plus the migration tracker
+- **enums (5):** `strategy_status`, `signal_direction`, `trade_status`, `stats_window`,
+  `evolution_action`
+- **indexes:** `features_symbol_ts_idx`, `market_snapshots_symbol_ts_idx`,
+  `social_snapshots_symbol_ts_idx`
+
+### (b) Server boots and crons register — PASS
+
+```
+[pulse] listening on 3000, cron registered for */5 * * * *
+```
+
+`GET /health` → `{"ok":true}`. The registered cron fired unattended at 16:15:01 UTC and wrote
+a tick, confirming registration is live rather than just logged.
+
+### (c) Market ingestion inserts real rows — PASS (19/20, one delisted)
+
+`[marketIngest] inserted 19 rows`, `no bars returned for: BITF`.
+
+Row counts after three ticks:
+
+| table | rows |
+|---|---|
+| `tickers` | 20 |
+| `market_snapshots` | 40 |
+| `social_snapshots` | 0 (deferred, see below) |
+| `features` | 0 (phase 2) |
+
+Per tick: 16:11:53 → 11 rows, 16:15:01 → 10 rows, 16:16:10 → **19 rows**. The first two ticks
+ran before the pagination fix below.
+
+Three sample rows from the post-fix tick:
+
+| symbol | ts | price | volume_1h | rel_volume | pct_change_1h | pct_change_1d |
+|---|---|---|---|---|---|---|
+| APLD | 2026-08-11T16:16:10.575Z | 29.56 | 464554 | 0.153 | −0.404 | 1.721 |
+| ASTS | 2026-08-11T16:16:10.575Z | 70.28 | 267609 | 0.108 | 0.450 | 2.211 |
+| BBAI | 2026-08-11T16:16:10.575Z | 3.275 | 207308 | 0.051 | 0.306 | 1.393 |
+
+### (d) Social workers degrade without crashing — PASS
+
+```
+[reddit] REDDIT_* not set — using public JSON endpoints (unauthenticated rate limits)
+[stocktwitsIngest] source fetch failed for SOFI, skipping tick: … 403 (Cloudflare)
+[redditIngest] source fetch failed, skipping tick: … 403 (Reddit block page)
+[pipeline] tick finished in 4013ms
+```
+
+Both warned, inserted zero rows, and the tick completed. `social_snapshots` = 0 rows,
+DEFERRED-TO-DEPLOYMENT as agreed.
+
+### Bug found and fixed during verification — Alpaca pagination
+
+The first tick inserted only 11 of 20 rows. `getBars` was returning `body.bars` and ignoring
+`body.next_page_token`. Alpaca paginates far below the requested `limit=10000` — the
+20-symbol `1Hour` call returned 242 bars with a non-null token, silently dropping every
+symbol after `OPEN` alphabetically.
+
+`server/services/alpaca.js` now follows the token, concatenating per-symbol bars across pages
+(bound `MAX_PAGES = 50`, ~20× the worst real case; exhausting it throws rather than returning
+truncated data). `1Hour` now takes 2 pages, 456 bars, 19/20 symbols. `OPEN` splits 2 + 22
+across the page boundary — a naive merge would have kept only the 22 and reintroduced the bug
+for that symbol.
+
+The `1Day` call was single-page and was never affected.
+
+### Deferred / open items
+
+- **BITF is delisted.** `GET /v2/assets/BITF` → `status: inactive`, `tradable: false`; its
+  bar feed stops at 2026-04-02. It will log `no bars returned for: BITF` every tick and hold
+  `market_snapshots` at 19 rows. The watchlist is owner-maintained, so it has been left in
+  place — replace or drop it in `server/config.js` when convenient.
+- **ASTS is priced $70.28**, outside the spec's $1–$50 tradable band. Ingest is unfiltered by
+  design; the price guard belongs to `strategyRunner` (phase 2) and will exclude it at trade
+  time.
+- **403 HTML bodies are logged in full** — the Cloudflare and Reddit block pages run to
+  ~190KB of markup per tick. Harmless but noisy; worth truncating the error body if this
+  persists past deployment.
+
+---
+
+## Phase 1 — original gate (superseded)
+
+**Not passed. Superseded by the amended gate above.**
 
 Phase 1 code was already present at the start of this run and was not rebuilt. The task was
 to verify it. Verification could not be executed because the database is unreachable from
@@ -80,18 +171,16 @@ require a change on disk that has not landed yet (see the status table below).
 
 | # | Decision | Status (re-verified 2026-08-11, second pass) |
 |---|---|---|
-| 1 | Use Railway public `DATABASE_URL` | **STILL NOT ON DISK** — `.env` byte-identical, 515 bytes, mtime Aug 10 21:51; host still `postgres.railway.internal` |
+| 1 | Use Railway public `DATABASE_URL` | **RESOLVED** — written directly to `.env`, host `altaria.proxy.rlwy.net:48382`, mtime moved to 16:11:28 UTC |
 | 2 | Keep dual-path Reddit; social verification DEFERRED to deployment | in effect |
 | 3 | Keep Stocktwits as written; verification DEFERRED to deployment | in effect |
-| 4 | Anthropic credit added | **STILL FAILING** — identical `400 invalid_request_error`, "credit balance is too low" |
-| 5 | `quiet-precision.md` in repo root for phase 3 | **STILL NOT ON DISK** — repo root holds only `BUILD_LOG.md`, `pulse-spec.md`, `package.json`, dotfiles |
-| 6 | `git remote add origin` + push | **DONE** — `origin` → `github.com/HenriqueGomesHub/Pulse.git`, `main` pushed, 3 commits |
+| 4 | Anthropic credit added | **RESOLVED** — 1-token `claude-haiku-4-5` call returns 200 |
+| 5 | `quiet-precision.md` in repo root for phase 3 | **STILL NOT ON DISK** — proceed now, halt at phase 3's start if still missing (owner decision) |
+| 6 | `git remote add origin` + push | **DONE** — `origin` → `github.com/HenriqueGomesHub/Pulse.git`, `main` pushed |
 
-Items 1, 4 and 5 have now failed verification twice, with no change between passes. `.env`
-has not been written to since Aug 10 21:51. A filesystem check confirmed only one `Pulse`
-directory exists under `OneDrive\Documentos\Coding`, and no copy on Desktop, Downloads or
-Documents — so this is not an edit landing in a duplicate checkout. Something is preventing
-the edits from reaching disk (unsaved buffer, OneDrive sync, or a different machine).
+Root cause of the three failed rounds: unsaved editor buffers. Resolved by writing `.env`
+directly rather than through the editor. Only one `Pulse` checkout exists — the edits were
+never landing on disk at all.
 
 ### DEFERRED-TO-DEPLOYMENT — social_snapshots population
 
