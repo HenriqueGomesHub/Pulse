@@ -105,6 +105,9 @@ function featureBag(row) {
     unique_authors_1h: row.unique_authors_1h === null ? null : Number(row.unique_authors_1h),
     rel_volume_zscore: row.rel_volume_zscore === null ? null : Number(row.rel_volume_zscore),
     price_momentum: row.price_momentum === null ? null : Number(row.price_momentum),
+    price_momentum_1d: row.price_momentum_1d === null ? null : Number(row.price_momentum_1d),
+    price_momentum_2d: row.price_momentum_2d === null ? null : Number(row.price_momentum_2d),
+    days_to_cover: row.days_to_cover === null ? null : Number(row.days_to_cover),
     exhaustion_score: row.exhaustion_score === null ? null : Number(row.exhaustion_score),
   };
 }

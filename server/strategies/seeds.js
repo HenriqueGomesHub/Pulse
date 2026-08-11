@@ -31,7 +31,11 @@ export const SEEDS = [
     params: {
       side: 'long',
       entry: {
-        all: [{ feature: 'mention_zscore', op: 'gt', value: 2 }],
+        all: [
+          { feature: 'days_to_cover', op: 'gt', value: 3 },
+          { feature: 'mention_zscore', op: 'gt', value: 2 },
+          { feature: 'price_momentum_1d', op: 'gt', value: 3 },
+        ],
       },
       exit: {
         any: [
@@ -71,7 +75,10 @@ export const SEEDS = [
     params: {
       side: 'short',
       entry: {
-        all: [{ feature: 'exhaustion_score', op: 'gt', value: 0.9 }],
+        all: [
+          { feature: 'exhaustion_score', op: 'gt', value: 0.9 },
+          { feature: 'price_momentum_2d', op: 'gt', value: 30 },
+        ],
       },
       exit: {
         any: [

@@ -75,6 +75,100 @@ Retested: 1-token `claude-haiku-4-5` call returns **200 OK**. No phase 4 halt on
 
 ---
 
+## Owner decisions 2026-08-11 (third set) — implemented
+
+### 1. Seed #2's gate is now days-to-cover, on real FINRA data
+
+`short_interest_pct` is unobtainable — FINRA publishes shares short, not a percentage, and
+converting needs float, which no approved source provides. Redefined:
+`days_to_cover = shares_short / avg_volume_30d`, entry gate `> 3`. `avg_volume_30d` was already a
+true daily mean, so it is a direct division.
+
+**19 of 20 tickers carry real values**, latest settlement `2026-07-31`. PLUG 5.73, BBAI 5.62,
+SOUN 4.56, MARA 2.28, RKLB 2.18 — 12 of 19 clear the gate. The only NULL is BITF, which fails on
+both legs independently (delisted, so no volume; absent from FINRA's file). NULL, never 0.
+
+**The FINRA endpoint requires no authentication.** The supplied credentials fail OAuth
+(`400 invalid_client`) and are not needed — they have been removed from `.env.example` and the
+spec. `settlementDate` is the dataset's partition key so it cannot be sorted on; the query
+filters a trailing 60-day window (≥ 2 publication cycles) and picks the latest per symbol
+client-side. One request, 76 rows for the whole watchlist.
+
+Our days-to-cover diverges from FINRA's own by up to **±17%**, unbiased in sign, entirely from
+the volume denominator (they average over their semi-monthly cycle, we use 30 trailing
+sessions). No symbol crosses the `> 3` gate differently today, but CLSK (3.26 vs 3.25) and WULF
+(3.07 vs 3.34) sit close enough to matter later.
+
+### 2. Evolution is now swap semantics with a floor of 3
+
+A strategy is retired **only** in a cycle where a validated candidate replaces it; no qualifying
+candidate means no retirement, logged as a skipped cycle. The active set never drops below 3.
+
+The retirement moved from before the Claude call to inside the promotion loop. The bar is
+unchanged — the worst qualifier's own holdout expectancy through the identical harness — only
+its timing moved; `replay` is pure and reads nothing about `status`, so the number is bit-for-bit
+what the old code produced. A swap is two guarded CTEs inside one `BEGIN…COMMIT`, so neither half
+can land alone; demonstrated by forcing the second to fail and confirming the retirement and its
+log row both rolled back.
+
+Floor semantics: retirement requires ≥ 4 active, so the set never reaches 3 by shrinking, not
+even transiently inside the transaction. **At exactly 3, promotion still happens and grows the
+set** — a swap is net-neutral, so that is the only state where the floor bites.
+
+A winning **short** candidate is not promoted and explicitly does **not** consume the retirement,
+leaving it available to a long candidate in the same cycle.
+
+Six scenarios demonstrated on a throwaway database (created and dropped): swap, tie → no
+retirement, Claude returns nothing → no retirement, floor → additive promotion only, short wins →
+no retirement, two winners → swap plus one addition.
+
+### 3. `price_momentum_1d` and `price_momentum_2d` added
+
+Closes deferred **M9** and makes seed #4's "price up > 30% in 2 days" expressible. Both populated
+for all 19 live tickers. Seed #4 stays `candidate` regardless, per the owner — the short path has
+no borrow check and has never executed live.
+
+### The replay was blind to every new feature — caught and structurally fixed
+
+The holdout replay selected an explicit feature column list and built its own bag; neither
+included the three new columns. Replayed seed-#2/#4 mutations would have scored "condition not
+met", produced no entries, and returned NULL holdout expectancy — which under swap semantics
+means **no swap could ever happen for those lineages**, silently, looking exactly like "no
+candidate was good enough".
+
+Fixed by deriving both lists from `engine.js`'s `VOCABULARY`, the same authority that generates
+the proposal schema. Adding a feature now requires no change here, and a feature that is not a
+`features` column fails loudly with `column … does not exist` rather than silently reading NULL.
+
+Verified the seeds still replay to zero trades for a *legitimate* reason, not this one: the 38
+rows carrying the new columns fall on 2 of 39 replay ticks, both stamped 19:02 and 19:15 ET —
+after the replay's entry window. `featureEngine` has only run twice since migration 006 and both
+runs were after hours.
+
+### Minor decisions — resolved as recommended
+
+- **M5** `MIN_QUALIFIERS = 2` — ratified. Composes with swap semantics rather than conflicting.
+- **M4** the weekly Claude call stays outside `claude_call_budget`. Under swap semantics a
+  starved call is now worse: no candidate means no swap and a wasted cycle.
+- **M2** the replay's fixed session clock — left, disclosed. Affects baseline and candidates
+  identically, so ranking is unaffected.
+- **M1** the replay's optimism — disclosed, not modelled. This matters *more* under swap
+  semantics: promotion is the only thing that moves the population, so an overstated candidate
+  makes swaps rest on thinner evidence than they appear to.
+
+### Still open
+
+- **Seed #3 would fail the exit-shape check.** Spec §5.3 gives `quiet-accumulation` a stop but no
+  time bound, so it can hold a winner indefinitely. Nothing is broken — the check applies only to
+  Claude's proposals, not owner seeds — but the spec defines a strategy the evolution loop would
+  refuse to invent. Seed #3 is the one seed fully expressible today and will likely trade first.
+- **Stale prompt prose.** `CONDITION_SCHEMA`'s description still says "Every other feature is
+  NULL until social data flows", which is now false for `days_to_cover` and both momentum
+  features. It is text sent to Claude, so it may bias proposals away from features that now carry
+  real data.
+
+---
+
 ## FINAL SUMMARY — end of the build run, 2026-08-11
 
 Phases 1–3 passed their gates. Phases 4 and 5 are built, audited and fixed, but **both gates are

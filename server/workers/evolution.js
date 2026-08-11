@@ -8,6 +8,7 @@ const EVOLUTION_MAX_TOKENS = 2000;
 const PROPOSALS = 4;
 const MIN_CLOSED_TRADES = 10;
 const MIN_QUALIFIERS = 2;
+const MIN_ACTIVE_STRATEGIES = 3;
 const MAX_ACTIVE_STRATEGIES = 6;
 const HOLDOUT_DAYS = 30;
 const RECENCY_WEIGHT_7D = 2;
@@ -25,6 +26,9 @@ const REPLAY_SESSION_OPEN_MINUTES = 9 * 60 + 30;
 const REPLAY_SESSION_CLOSE_MINUTES = 16 * 60;
 const EXIT_STOP_OPERATORS = ['lte', 'lt'];
 const EXIT_HOLD_OPERATORS = ['gte', 'gt'];
+
+const POSITION_ONLY_FEATURES = new Set(['pnl_pct', 'hold_hours']);
+const REPLAY_FEATURE_COLUMNS = VOCABULARY.features.filter((feature) => !POSITION_ONLY_FEATURES.has(feature));
 
 const ACTIVE_STATS_SQL = `
   SELECT s.id::int AS id,
@@ -70,8 +74,7 @@ const HOLDOUT_SYMBOLS_SQL = `
 `;
 
 const HOLDOUT_FEATURES_SQL = `
-  SELECT symbol, ts, social_velocity, social_accel, author_quality, mention_zscore,
-         mentions_1h, unique_authors_1h, rel_volume_zscore, price_momentum, exhaustion_score
+  SELECT symbol, ts, ${REPLAY_FEATURE_COLUMNS.join(', ')}
   FROM features
   WHERE ts > now() - make_interval(days => $1::int) AND symbol = ANY($2::text[])
   ORDER BY ts, symbol
@@ -298,18 +301,9 @@ async function loadHoldout() {
 }
 
 function replayBag(row, extra) {
-  return {
-    social_velocity: num(row?.social_velocity),
-    social_accel: num(row?.social_accel),
-    author_quality: num(row?.author_quality),
-    mention_zscore: num(row?.mention_zscore),
-    mentions_1h: num(row?.mentions_1h),
-    unique_authors_1h: num(row?.unique_authors_1h),
-    rel_volume_zscore: num(row?.rel_volume_zscore),
-    price_momentum: num(row?.price_momentum),
-    exhaustion_score: num(row?.exhaustion_score),
-    ...extra,
-  };
+  const bag = {};
+  for (const feature of REPLAY_FEATURE_COLUMNS) bag[feature] = num(row?.[feature]);
+  return { ...bag, ...extra };
 }
 
 function replay(params, holdout) {
@@ -415,21 +409,22 @@ function uniqueName(raw, taken) {
   return name;
 }
 
-async function proposalsFor(ranked, retired, aggregates) {
+async function proposalsFor(ranked, weakest, aggregates) {
   const brief = {
     objective:
       'Maximise expectancy = win_rate * avg_win_pct + loss_rate * avg_loss_pct (avg_loss_pct is signed negative) and keep max_drawdown small. Never optimise win rate.',
     vocabulary: { features: [...VOCABULARY.features], operators: [...VOCABULARY.operators] },
-    retired_this_cycle: {
-      name: retired.name,
-      expectancy_30d: retired.expectancy_30d,
-      recency_weighted_expectancy: retired.score,
+    strategy_to_replace: {
+      name: weakest.name,
+      expectancy_30d: weakest.expectancy_30d,
+      recency_weighted_expectancy: weakest.score,
+      note: 'Still active. It is retired only if one of your proposals beats its holdout expectancy and takes its place; if none does, nothing is retired this cycle.',
     },
     best_strategies: ranked.slice(0, 2).map((strategy) => ({
       rank: strategy.rank,
       name: strategy.name,
       generation: strategy.generation,
-      retired_this_cycle: strategy.id === retired.id,
+      is_strategy_to_replace: strategy.id === weakest.id,
       side: strategy.params.side,
       entry: toBlockShape(strategy.params.entry),
       exit: toBlockShape(strategy.params.exit),
@@ -458,6 +453,27 @@ async function proposalsFor(ranked, retired, aggregates) {
   );
 }
 
+async function swap(retire, promote) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const retired = await client.query(RETIRE_SQL, [retire.id, retire.rationale, retire.expectancy]);
+    if (retired.rowCount === 0) {
+      throw new Error(`evolution: strategy ${retire.id} (${retire.name}) was not active at retirement time`);
+    }
+    const promoted = await client.query(PROMOTE_SQL, [promote.id, promote.rationale, promote.expectancy]);
+    if (promoted.rowCount === 0) {
+      throw new Error(`evolution: strategy ${promote.id} (${promote.name}) was not a candidate at promotion time`);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function evolution() {
   await statsRollup();
 
@@ -482,24 +498,27 @@ export async function evolution() {
   }
 
   const worst = ranked[ranked.length - 1];
+  const retirementAllowed = active.length - 1 >= MIN_ACTIVE_STRATEGIES;
   const holdout = await loadHoldout();
   console.log(
     `[evolution] holdout window ${HOLDOUT_DAYS}d: ${holdout.ticks.length} feature ticks over ${holdout.symbols.length} eligible symbols`
   );
 
   const baseline = replay(worst.params, holdout);
-  const retireRationale =
+  const baselineText = baseline.expectancy === null ? 'NULL' : baseline.expectancy.toFixed(4);
+  const standing =
     `Ranked ${worst.rank} of ${ranked.length} qualifiers on recency-weighted expectancy ` +
     `${worst.score.toFixed(4)} (30d ${worst.expectancy_30d.toFixed(4)} over ${worst.trades_30d} closed trades, ` +
     `7d ${worst.expectancy_7d === null ? 'no trades' : worst.expectancy_7d.toFixed(4)} over ${worst.trades_7d}). ` +
     `Holdout replay over the last ${HOLDOUT_DAYS} days closed ${baseline.trades_n} trades, expectancy ` +
-    `${baseline.expectancy === null ? 'NULL (too few replayed trades to measure)' : baseline.expectancy.toFixed(4)}.`;
+    `${baselineText}${baseline.expectancy === null ? ' (too few replayed trades to measure)' : ''}.`;
 
-  const retiredId = (await pool.query(RETIRE_SQL, [worst.id, retireRationale, baseline.expectancy])).rows[0];
-  if (retiredId === undefined) {
-    throw new Error(`evolution: strategy ${worst.id} (${worst.name}) was not active at retirement time`);
-  }
-  console.log(`[evolution] RETIRED ${worst.name} (id ${worst.id}) — ${retireRationale}`);
+  console.log(
+    `[evolution] ${worst.name} (id ${worst.id}) is the strategy a candidate must beat and would replace. ${standing} ` +
+      (retirementAllowed
+        ? `It is retired only if a long candidate beats that holdout expectancy and takes its place in the same transaction.`
+        : `The active set is ${active.length}, so removing it would leave ${active.length - 1}, below the floor of ${MIN_ACTIVE_STRATEGIES}: NOTHING is retired this cycle whatever the candidates do, and a winning candidate is promoted as an addition instead.`)
+  );
 
   const aggregates = new Map(
     (await pool.query(TRADE_AGGREGATES_SQL, [HOLDOUT_DAYS, ranked.slice(0, 2).map((s) => s.id)])).rows.map(
@@ -510,7 +529,7 @@ export async function evolution() {
   const verdict = await proposalsFor(ranked, worst, aggregates);
   if (verdict === null) {
     console.warn(
-      `[evolution] ${EVOLUTION_MODEL} returned nothing usable. The retirement of ${worst.name} stands and NO candidates were proposed this week. The active set is now one strategy smaller until the next cycle.`
+      `[evolution] SKIPPED CYCLE: ${EVOLUTION_MODEL} returned nothing usable, so no candidate exists to replace ${worst.name}. Nothing retired, nothing promoted, no evolution_log rows written — the active set stays at ${active.length}.`
     );
     return;
   }
@@ -536,10 +555,9 @@ export async function evolution() {
       `${proposal.kind === 'novel' ? 'Novel combination' : 'Mutation'} of ${parent.name}: ${proposal.rationale} ` +
       `Holdout replay closed ${result.trades_n} trades over the last ${HOLDOUT_DAYS} days, expectancy ` +
       `${result.expectancy === null ? `NULL (fewer than ${MIN_CLOSED_TRADES} replayed trades, so it is unknown rather than bad)` : result.expectancy.toFixed(4)}` +
-      `, against the retired ${worst.name}'s holdout expectancy ` +
-      `${baseline.expectancy === null ? 'NULL' : baseline.expectancy.toFixed(4)}.` +
+      `, against the ${worst.name} it would replace, whose holdout expectancy over the same tape is ${baselineText}.` +
       (params.side === 'short'
-        ? ' Short side: the evolution loop cannot promote it, so it stays a candidate until a human activates it.'
+        ? ' Short side: the evolution loop cannot promote it, so it stays a candidate until a human activates it, and it therefore cannot replace or retire anything.'
         : '');
 
     const { strategy_id: id } = (
@@ -561,13 +579,16 @@ export async function evolution() {
 
   if (baseline.expectancy === null) {
     console.warn(
-      `[evolution] the retired ${worst.name} closed only ${baseline.trades_n} trades in the holdout replay, so its holdout expectancy is NULL and no candidate can be shown to beat it. ${created.length} candidates recorded, NONE promoted.`
+      `[evolution] SKIPPED CYCLE: ${worst.name} closed only ${baseline.trades_n} trades in the holdout replay, so its holdout expectancy is NULL and no candidate can be shown to beat it. ${created.length} candidates recorded, NONE promoted, NOTHING retired — the active set stays at ${active.length}.`
     );
     return;
   }
 
-  let activeCount = active.length - 1;
+  let activeCount = active.length;
+  let retirementPending = retirementAllowed;
+  let replacement = null;
   let promoted = 0;
+
   for (const candidate of [...created].sort((a, b) => (b.result.expectancy ?? -Infinity) - (a.result.expectancy ?? -Infinity))) {
     if (candidate.result.expectancy === null) {
       console.log(
@@ -577,37 +598,71 @@ export async function evolution() {
     }
     if (candidate.result.expectancy <= baseline.expectancy) {
       console.log(
-        `[evolution] ${candidate.name} not promoted: holdout expectancy ${candidate.result.expectancy.toFixed(4)} does not beat the retired ${worst.name}'s ${baseline.expectancy.toFixed(4)}.`
+        `[evolution] ${candidate.name} not promoted: holdout expectancy ${candidate.result.expectancy.toFixed(4)} does not beat ${worst.name}'s ${baseline.expectancy.toFixed(4)}, so it has not earned the right to replace it.`
       );
       continue;
     }
     if (candidate.params.side === 'short') {
       console.warn(
-        `[evolution] ${candidate.name} (id ${candidate.id}) beat the baseline with holdout expectancy ${candidate.result.expectancy.toFixed(4)} but is NOT promoted: it is a short, and a short reaches live trading only when a human activates it. It stays a candidate, where seed #4 fade-the-peak also sits — there is no borrow check anywhere, a rejected short sell throws out of strategyRunner's loop and kills the rest of that tick, and the short path has never executed against the live broker.`
+        `[evolution] ${candidate.name} (id ${candidate.id}) beat ${worst.name}'s ${baseline.expectancy.toFixed(4)} with holdout expectancy ${candidate.result.expectancy.toFixed(4)} but is NOT promoted: it is a short, and a short reaches live trading only when a human activates it. It stays a candidate, where seed #4 fade-the-peak also sits — there is no borrow check anywhere, a rejected short sell throws out of strategyRunner's loop and kills the rest of that tick, and the short path has never executed against the live broker. Because it is not promoted it takes nobody's place, so it does NOT retire ${worst.name}${retirementPending ? ', whose retirement stays available to a long candidate in this cycle' : ''}.`
       );
       continue;
     }
-    if (activeCount >= MAX_ACTIVE_STRATEGIES) {
+    if (!retirementPending && activeCount >= MAX_ACTIVE_STRATEGIES) {
       console.log(
-        `[evolution] ${candidate.name} not promoted: the active set is already at the cap of ${MAX_ACTIVE_STRATEGIES}.`
+        `[evolution] ${candidate.name} not promoted: it would be an addition rather than a replacement and the active set is already at the cap of ${MAX_ACTIVE_STRATEGIES}.`
       );
       continue;
     }
 
-    const rationale =
+    const edge =
       `Holdout expectancy ${candidate.result.expectancy.toFixed(4)} over ${candidate.result.trades_n} replayed trades ` +
-      `beats the retired ${worst.name}'s ${baseline.expectancy.toFixed(4)} over ${baseline.trades_n}. ` +
-      `Active strategies ${activeCount} of ${MAX_ACTIVE_STRATEGIES} before promotion.`;
-    const { rowCount } = await pool.query(PROMOTE_SQL, [candidate.id, rationale, candidate.result.expectancy]);
-    if (rowCount === 0) {
-      throw new Error(`evolution: strategy ${candidate.id} (${candidate.name}) was not a candidate at promotion time`);
+      `beats ${worst.name}'s ${baseline.expectancy.toFixed(4)} over ${baseline.trades_n} on the same holdout tape.`;
+
+    if (retirementPending) {
+      await swap(
+        {
+          id: worst.id,
+          name: worst.name,
+          rationale: `Replaced by ${candidate.name} (id ${candidate.id}), promoted in the same transaction. ${standing} The replacement scored ${candidate.result.expectancy.toFixed(4)} over ${candidate.result.trades_n} replayed trades on that same tape.`,
+          expectancy: baseline.expectancy,
+        },
+        {
+          id: candidate.id,
+          name: candidate.name,
+          rationale: `${edge} Promoted in place of ${worst.name}, which is retired in the same transaction. Active strategies ${activeCount} of ${MAX_ACTIVE_STRATEGIES}, unchanged by the swap.`,
+          expectancy: candidate.result.expectancy,
+        }
+      );
+      retirementPending = false;
+      replacement = candidate;
+      console.log(
+        `[evolution] SWAPPED ${worst.name} (id ${worst.id}) → ${candidate.name} (id ${candidate.id}): retirement and promotion committed together, active strategies still ${activeCount} of ${MAX_ACTIVE_STRATEGIES}`
+      );
+    } else {
+      const rationale =
+        `${edge} Promoted as an addition rather than a replacement: ` +
+        `${replacement === null ? `removing ${worst.name} would take the active set of ${active.length} below the floor of ${MIN_ACTIVE_STRATEGIES}, so nothing is retired this cycle` : `${worst.name}'s place was already taken by ${replacement.name}`}. ` +
+        `Active strategies ${activeCount} of ${MAX_ACTIVE_STRATEGIES} before promotion.`;
+      const { rowCount } = await pool.query(PROMOTE_SQL, [candidate.id, rationale, candidate.result.expectancy]);
+      if (rowCount === 0) {
+        throw new Error(`evolution: strategy ${candidate.id} (${candidate.name}) was not a candidate at promotion time`);
+      }
+      activeCount += 1;
+      console.log(`[evolution] PROMOTED ${candidate.name} (id ${candidate.id}) — ${rationale}`);
     }
-    activeCount += 1;
     promoted += 1;
-    console.log(`[evolution] PROMOTED ${candidate.name} (id ${candidate.id}) — ${rationale}`);
+  }
+
+  if (replacement === null) {
+    console.warn(
+      retirementAllowed
+        ? `[evolution] SKIPPED CYCLE: no long candidate beat ${worst.name}'s holdout expectancy ${baseline.expectancy.toFixed(4)}, so it stays active and NOTHING was retired. A strategy leaves only when a validated replacement takes its place.`
+        : `[evolution] no retirement this cycle: the active set of ${active.length} is at the floor of ${MIN_ACTIVE_STRATEGIES}, so ${worst.name} stays whatever the candidates score and the loop can only grow.`
+    );
   }
 
   console.log(
-    `[evolution] cycle complete: retired ${worst.name}, ${created.length} candidates recorded, ${promoted} promoted, ${activeCount} active strategies`
+    `[evolution] cycle complete: ${replacement === null ? 'nothing retired' : `swapped ${worst.name} → ${replacement.name}`}, ${created.length} candidates recorded, ${promoted} promoted, ${activeCount} active strategies`
   );
 }

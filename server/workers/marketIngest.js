@@ -34,6 +34,7 @@ export async function marketIngest() {
     const prevHour = hourBars[hourBars.length - 2];
     const lastDay = dayBars[dayBars.length - 1];
     const prevDay = dayBars[dayBars.length - 2];
+    const prevTwoDay = dayBars[dayBars.length - 3];
 
     const baseline = dayBars.slice(-31, -1);
     const avgHourlyVolume = baseline.length > 0
@@ -48,8 +49,9 @@ export async function marketIngest() {
       avgHourlyVolume ? last.v / avgHourlyVolume : null,
       pctChange(prevHour?.c, last.c),
       pctChange(prevDay?.c, lastDay?.c),
+      pctChange(prevTwoDay?.c, lastDay?.c),
     ];
-    values.push(`($${params.length + 1}, $${params.length + 2}, $${params.length + 3}, $${params.length + 4}, $${params.length + 5}, $${params.length + 6}, $${params.length + 7})`);
+    values.push(`($${params.length + 1}, $${params.length + 2}, $${params.length + 3}, $${params.length + 4}, $${params.length + 5}, $${params.length + 6}, $${params.length + 7}, $${params.length + 8})`);
     params.push(...row);
   }
 
@@ -59,7 +61,7 @@ export async function marketIngest() {
   if (values.length === 0) return;
 
   await pool.query(
-    `INSERT INTO market_snapshots (symbol, ts, price, volume_1h, rel_volume, pct_change_1h, pct_change_1d)
+    `INSERT INTO market_snapshots (symbol, ts, price, volume_1h, rel_volume, pct_change_1h, pct_change_1d, pct_change_2d)
      VALUES ${values.join(', ')}`,
     params
   );

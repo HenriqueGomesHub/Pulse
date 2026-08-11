@@ -7,12 +7,12 @@ const MENTION_SD_FLOOR = 1;
 
 const MARKET_SQL = `
   WITH recent AS (
-    SELECT symbol, ts, price, rel_volume, pct_change_1h
+    SELECT symbol, ts, price, rel_volume, pct_change_1h, pct_change_1d, pct_change_2d
     FROM market_snapshots
     WHERE ts > now() - interval '30 days'
   ),
   ranked AS (
-    SELECT symbol, rel_volume, pct_change_1h,
+    SELECT symbol, rel_volume, pct_change_1h, pct_change_1d, pct_change_2d,
            lag(rel_volume) OVER (PARTITION BY symbol ORDER BY ts) AS prev_rel_volume,
            row_number() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
     FROM recent
@@ -25,7 +25,8 @@ const MARKET_SQL = `
     FROM recent
     GROUP BY symbol
   )
-  SELECT r.symbol, r.rel_volume, r.prev_rel_volume, r.pct_change_1h, s.n, s.mean, s.sd
+  SELECT r.symbol, r.rel_volume, r.prev_rel_volume, r.pct_change_1h, r.pct_change_1d, r.pct_change_2d,
+         s.n, s.mean, s.sd
   FROM ranked r
   JOIN stats s USING (symbol)
   WHERE r.rn = 1
@@ -93,7 +94,7 @@ function exhaustionScore(inputs) {
 export async function featureEngine() {
   const ts = new Date();
   const [tickers, market, social, previous] = await Promise.all([
-    pool.query('SELECT symbol FROM tickers ORDER BY symbol'),
+    pool.query('SELECT symbol, days_to_cover FROM tickers ORDER BY symbol'),
     pool.query(MARKET_SQL),
     pool.query(SOCIAL_SQL),
     pool.query('SELECT DISTINCT ON (symbol) symbol, social_velocity FROM features ORDER BY symbol, ts DESC'),
@@ -106,13 +107,15 @@ export async function featureEngine() {
   const values = [];
   const params = [];
 
-  for (const { symbol } of tickers.rows) {
+  for (const { symbol, days_to_cover: daysToCover } of tickers.rows) {
     const m = marketBySymbol.get(symbol);
     const s = socialBySymbol.get(symbol);
 
     const relVolume = m ? num(m.rel_volume) : null;
     const prevRelVolume = m ? num(m.prev_rel_volume) : null;
     const priceMomentum = m ? num(m.pct_change_1h) : null;
+    const priceMomentum1d = m ? num(m.pct_change_1d) : null;
+    const priceMomentum2d = m ? num(m.pct_change_2d) : null;
     const relVolumeZscore = m
       ? zscore(relVolume, num(m.mean), num(m.sd), num(m.n), MIN_OBS_REL_VOLUME_30D)
       : null;
@@ -148,6 +151,9 @@ export async function featureEngine() {
       exhaustionScore({ socialAccel, priceMomentum, bullRatio, prevBullRatio, relVolume, prevRelVolume }),
       mentions,
       authors,
+      num(daysToCover),
+      priceMomentum1d,
+      priceMomentum2d,
     ];
     values.push(`(${row.map((_, index) => `$${params.length + index + 1}`).join(', ')})`);
     params.push(...row);
@@ -159,7 +165,7 @@ export async function featureEngine() {
   }
 
   await pool.query(
-    `INSERT INTO features (symbol, ts, social_velocity, social_accel, author_quality, mention_zscore, rel_volume_zscore, price_momentum, exhaustion_score, mentions_1h, unique_authors_1h)
+    `INSERT INTO features (symbol, ts, social_velocity, social_accel, author_quality, mention_zscore, rel_volume_zscore, price_momentum, exhaustion_score, mentions_1h, unique_authors_1h, days_to_cover, price_momentum_1d, price_momentum_2d)
      VALUES ${values.join(', ')}`,
     params
   );

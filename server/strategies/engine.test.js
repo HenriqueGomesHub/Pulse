@@ -181,6 +181,13 @@ test('VOCABULARY is exactly the set evaluate accepts, so callers cannot advertis
   assert.equal(VOCABULARY.operators.includes('eq'), false);
 });
 
+test('every seed strategy is expressible in the vocabulary, entry block and exit block alike', () => {
+  for (const seed of SEEDS) {
+    assert.doesNotThrow(() => evaluate(seed.params, { in_position: false }), seed.name);
+    assert.doesNotThrow(() => evaluate(seed.params, { in_position: true }), seed.name);
+  }
+});
+
 test('evaluate is pure: it does not mutate its arguments', () => {
   const params = JSON.parse(JSON.stringify(socialBreakout));
   const features = { ...ENTRY_MET };
