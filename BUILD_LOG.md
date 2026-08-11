@@ -6,10 +6,177 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 | Phase | Gate | Date |
 |---|---|---|
 | 1 — skeleton + data in | **PASSED** (amended gate) | 2026-08-11 |
-| 2 — features + one dumb strategy | not started | — |
-| 3 — dashboard | not started | — |
+| 2 — features + one dumb strategy | **PASSED** | 2026-08-11 |
+| 3 — dashboard | **HALTED at start** — `quiet-precision.md` missing | — |
 | 4 — full strategy set + stats | not started | — |
 | 5 — evolution | not started | — |
+
+---
+
+## Phase 3 — HALTED AT START
+
+`quiet-precision.md` is still not in the repo root. Per the owner decision recorded above,
+phase 2 proceeded without it and the run halts here rather than guessing at a design system.
+Spec §7 states "Quiet Precision v2.1 system doc applies" to all five dashboard pages.
+
+To resume: put `quiet-precision.md` in the repo root, or state that phase 3 proceeds without
+it. Nothing else blocks phase 3 — the API has real data to serve.
+
+---
+
+## Phase 2 — GATE PASSED 2026-08-11 17:05 UTC
+
+Full `signal → order → tracked-trade → closed-trade` lifecycle verified live against the
+Alpaca paper account during market hours.
+
+### Lifecycle evidence
+
+Three round trips, all closed. Entry orders placed at 12:55 PM ET, exits submitted on the
+following tick, settled on the tick after that.
+
+| id | symbol | status | qty | entry | exit | pnl_pct | max_dd | hold_h | entry order | exit order | attempt |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | APLD | closed | 33 | 29.82 | 29.80 | −0.0671 | 0.1006 | 0.0057 | 717bbbb0… | c481656d… | 1 |
+| 2 | CLSK | closed | 86 | 11.64 | 11.63 | −0.0859 | 0.0859 | 0.0059 | 4e5c5c15… | 995c43b6… | 1 |
+| 3 | FCEL | closed | 50 | 19.84 | 19.83 | −0.0504 | 0.1008 | 0.0058 | eba1f9d8… | adcbab51… | 1 |
+
+Six signals written (3 entry, 3 exit), each carrying the condition that fired.
+`conviction` is NULL throughout — correct, conviction is the phase 4 Claude call.
+
+Alpaca confirms: **0 open positions**, 6 filled orders (3 buy, 3 sell), equity $99,997.98.
+The $2.02 is round-trip spread on three positions, consistent with the recorded PnLs.
+
+Row counts at gate: `tickers` 20, `market_snapshots` 300, `social_snapshots` 0 (deferred),
+`features` 200, `strategies` 1, `signals` 6, `trades` 3.
+
+### Temporary-threshold method — applied and RESTORED
+
+Per the owner decision recorded in spec §8 phase 2. Strategy #1 cannot fire on real thresholds
+while social data is absent, so entry was temporarily narrowed to a single market-data
+condition and the max-hold was dropped to force the exit leg:
+
+- entry, temporary: `price_momentum gt 0` (replacing the three-way social AND)
+- exit, temporary: `hold_hours gte 0` (replacing `gte 72`)
+
+**Both restored immediately after the lifecycle closed**, and the restoration was verified by
+reading the `strategies` row back out of the database after a propagation tick — it matches
+spec §5.1 byte-for-byte: entry `mention_zscore > 3 AND social_accel > 0 AND
+rel_volume_zscore > 2`; exit `exhaustion_score > 0.7 OR pnl_pct <= −8 OR pnl_pct >= 15 OR
+hold_hours >= 72`. The post-restore tick placed zero entries, as expected.
+
+### Guards observed firing in production
+
+- **$1,000 notional** — $983.73 / $999.75 / $991.50. Under the cap on all three, sized from a
+  fresh last-trade price rather than the stale hourly close.
+- **PDT** — after three same-session entries the runner reported
+  `3 reserved by positions opened this session, no entries` and stopped. Post-close it reads
+  `3 day-trades used`. The limit held on both sides.
+- **Exit settlement** — exits went `pending_new` on submission and only closed on the next
+  tick at the real `filled_avg_price` (29.8 / 11.63 / 19.83), never at a snapshot quote.
+
+### Fix cycle 1 — all seven findings closed
+
+C2 exit-fill reconciliation (submission and settlement split across ticks, real
+`filled_avg_price` and `filled_at`, exit order id persisted via migration `002`);
+C3 idempotency (trade row written before the order, deterministic `client_order_id`,
+lookup-then-submit recovery on both legs); C4 market-hours gate on exits via Alpaca
+`/v2/clock`; H2 two-sided PDT with entry-side reservation; H3 terminal unfilled entries marked
+`expired`; M3 entry window from `/v2/clock` with a strictly exclusive close boundary;
+M7 sizing from a fresh last-trade price.
+
+Two judgement calls worth knowing: PDT reserves a day-trade slot for every same-session
+position, which caps entries at 3 per session rather than 5 — chosen because a real PDT breach
+freezes the account for 90 days. And `notional` orders were rejected in favour of computed
+`qty`, because small caps are frequently not fractionable at Alpaca and seed #4's short side
+cannot use notional at all.
+
+Migration `002_trade_exit_order.sql` adds `trades.exit_order_id` and `trades.exit_attempt`.
+
+### Still open after the gate
+
+The deferred list below stands. **H4 is the one to resolve before deployment** — with social
+data flowing, `mention_zscore > 3` currently means "mentioned at least once", so seed #1 would
+start trading on almost any mention.
+
+---
+
+## Phase 2 — implementation and audit detail
+
+Implemented: `strategies/engine.js` (pure, unit-tested), `strategies/seeds.js` (seed #1 only),
+`workers/featureEngine.js`, `workers/strategyRunner.js`, `workers/positionTracker.js`,
+order methods on `services/alpaca.js`, pipeline chaining in `index.js`.
+
+`npm test` — **19 tests, 19 pass**, covering entry and exit conditions, NULL handling,
+operator matrix, vocabulary enforcement, and purity. `features` is populating: 20 rows per
+tick, one per active ticker.
+
+Seed #1 params verified byte-for-byte against spec §5.1. Cron sequencing verified: one
+pipeline per tick, ingests in parallel, then featureEngine → strategyRunner → positionTracker.
+Zero signals so far, which is **correct** — the entry is an AND over three social-derived
+features that are all NULL while `social_snapshots` is empty. No threshold was lowered.
+
+### Prerequisite closed — `tickerMetaRefresh` (owner-authorised)
+
+The eligibility guard requires `avg_volume_30d > 500k` and `exchange` in NYSE/NASDAQ/AMEX.
+Both columns were NULL for all 20 tickers, so the guard matched **zero** tickers and no trade
+could ever fire in any phase. `tickerMetaRefresh` is listed in spec §3 but assigned to no
+phase in §8 — a gap in the build order. The owner authorised building it now.
+
+`server/workers/tickerMetaRefresh.js` populates `name`, `exchange` and `avg_volume_30d` from
+Alpaca, on a daily 06:00 ET cron, separate from the 5-minute pipeline. Eligible tickers went
+**0 → 17 of 20**. Failing: ASTS ($69.58) and RKLB ($78.16) are above the spec's $50 ceiling;
+BITF has no volume data (delisted).
+
+`float_shares` and `short_interest_pct` remain NULL — Alpaca does not expose them and no other
+source is approved. **Seed #2 (`squeeze-setup`) gates on `short_interest_pct > 15` and will
+therefore never fire in phase 4 until a source for it is chosen.**
+
+### Independent audit — findings
+
+A separate audit subagent reviewed the diff against the spec and the forbidden list. It
+confirmed as correctly met: cron sequencing, seed #1 params, seeds 2–4 absent, the
+insufficient-data-NULL rule, `engine.js` purity, NULL-as-not-met, the 5-concurrent-trades cap,
+the price/volume/exchange guard, no swallowed errors, no narrating comments, no new
+dependencies, no gratuitous edits to phase 1 files, and tests confined to `engine.js`.
+
+**Fix cycle 1 dispatched for these:**
+
+| ID | Sev | Finding |
+|---|---|---|
+| C2 | CRITICAL | Exits close on an unfilled order — `filled_avg_price` is null milliseconds after submit, so `exit_price` records a stale quote and `pnl_pct` is biased optimistic on every trade. A rejected close marks the trade closed while the position stays open. |
+| C3 | CRITICAL | Order path is not idempotent — a failure between submit and DB write duplicates entries (doubling the position) or double-sells an exit (flipping long to short). |
+| C4 | CRITICAL | `positionTracker` has no market-hours guard and runs 24/7. Seed #1's 72h max-hold lands on a Saturday for any Wednesday entry — routine, not edge case. |
+| H2 | HIGH | PDT guard is one-sided — day trades are created by *exits*, which never consult the counter. Five correlated stop-outs = five day trades in one session. |
+| H3 | HIGH | A rejected/cancelled entry strands the trade `open` forever, holding an open-trade slot and blocking re-entry. The `expired` enum value is never written. |
+| M3 | MEDIUM | Entry window admits 15:45 exactly (a real cron tick) when [15:45, 16:00) is forbidden; no holiday or early-close awareness. |
+| M7 | MEDIUM | `qty = floor(1000/price)` uses an up-to-60-minute-stale hourly close, so notional can exceed the fixed $1,000. |
+
+**Deferred, tracked, NOT fixed in this cycle** — these need either social data or an owner
+decision, and none blocks today's lifecycle verification:
+
+- **H4 (HIGH) — `mention_zscore > 3` degenerates to "mentioned once".** The 7-day baseline
+  includes a zero row for every unmentioned ticker every tick (~2016 near-zero observations),
+  so a single mention scores z ≈ 45. Seed #1's entry gate collapses to `rel_volume_zscore > 2
+  AND mentioned once` rather than the 3-sigma spike spec §5.1 intends. **This will start
+  placing orders the moment social data flows on Railway — it needs a decision before then.**
+- **H1 (HIGH)** — featureEngine groups social rows by exact `ts`, but Reddit and Stocktwits
+  stamp independent timestamps, so the two sources never aggregate and one is dropped at
+  random per tick. Also intermittently nulls `bull_ratio`, disabling the exhaustion exit.
+- **M5** — minimum-observation thresholds (20 obs ≈ 100 minutes) are far below the 30-day and
+  24-hour windows they claim to cover.
+- **M4** — `max_drawdown_pct` is measured from entry, not from peak; a trade that runs +50%
+  then falls to +20% records 0 drawdown. Max drawdown is half the spec's objective function.
+- **M6** — `author_quality` is a unique-author ratio, not the spec's "account age & karma
+  weighted" astroturf filter.
+- **M9** — `price_momentum` stores only the 1h component; spec §4 defines it as 1h *and* 1d.
+  Seeds #2 and #4 need the 1d value in phase 4. Needs a schema decision.
+- **M2** — PDT window is 7 calendar days rather than 5 sessions; undercounts on holiday weeks
+  (~9 occurrences/year).
+- **M8** — which 5 positions get taken is nondeterministic (no `ORDER BY`), so phase 5's
+  holdout replay cannot reproduce trade selection.
+- LOW: seed params overwritten every tick, no cron overlap guard, `social_accel` not
+  time-normalised, z-score baselines include the scored observation, unused short-side
+  branches, unused vocabulary entries.
 
 ---
 

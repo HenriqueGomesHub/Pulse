@@ -4,6 +4,7 @@ const REQUIRED = [
   'DATABASE_URL',
   'ALPACA_KEY_ID',
   'ALPACA_SECRET',
+  'ALPACA_BASE_URL',
   'ALPACA_DATA_URL',
 ];
 
@@ -40,5 +41,7 @@ export const WATCHLIST = [
 ];
 
 export const SUBREDDITS = ['wallstreetbets', 'pennystocks', 'Shortsqueeze'];
+
+export const MAX_DAY_TRADES_PER_5_SESSIONS = 3;
 
 export const PORT = Number(process.env.PORT) || 3000;

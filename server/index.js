@@ -2,9 +2,14 @@ import express from 'express';
 import cron from 'node-cron';
 import { PORT, WATCHLIST } from './config.js';
 import { pool } from './db/pool.js';
+import { featureEngine } from './workers/featureEngine.js';
 import { marketIngest } from './workers/marketIngest.js';
+import { positionTracker } from './workers/positionTracker.js';
 import { redditIngest } from './workers/redditIngest.js';
 import { stocktwitsIngest } from './workers/stocktwitsIngest.js';
+import { strategyRunner } from './workers/strategyRunner.js';
+import { tickerMetaRefresh } from './workers/tickerMetaRefresh.js';
+import { SEEDS } from './strategies/seeds.js';
 
 const WINDOW_OPEN_MINUTES = 7 * 60 + 30;
 const WINDOW_CLOSE_MINUTES = 18 * 60;
@@ -33,6 +38,19 @@ async function runPipeline(forceMarket) {
     [WATCHLIST]
   );
 
+  for (const seed of SEEDS) {
+    await pool.query(
+      'UPDATE strategies SET params = $3 WHERE name = $1 AND generation = $2',
+      [seed.name, seed.generation, seed.params]
+    );
+    await pool.query(
+      `INSERT INTO strategies (name, generation, params, status)
+       SELECT $1, $2, $3, 'active'
+       WHERE NOT EXISTS (SELECT 1 FROM strategies WHERE name = $1 AND generation = $2)`,
+      [seed.name, seed.generation, seed.params]
+    );
+  }
+
   const tasks = [redditIngest(), stocktwitsIngest()];
   if (forceMarket || inMarketWindow(new Date())) {
     tasks.push(marketIngest());
@@ -41,11 +59,17 @@ async function runPipeline(forceMarket) {
   }
 
   await Promise.all(tasks);
+  await featureEngine();
+  await strategyRunner();
+  await positionTracker();
   console.log(`[pipeline] tick finished in ${Date.now() - startedAt}ms`);
 }
 
 if (process.argv[2] === 'tick') {
   await runPipeline(true);
+  await pool.end();
+} else if (process.argv[2] === 'meta') {
+  await tickerMetaRefresh();
   await pool.end();
 } else {
   const app = express();
@@ -59,5 +83,15 @@ if (process.argv[2] === 'tick') {
     { timezone: 'America/New_York' }
   );
 
-  app.listen(PORT, () => console.log(`[pulse] listening on ${PORT}, cron registered for */5 * * * *`));
+  cron.schedule(
+    '0 6 * * *',
+    () => {
+      tickerMetaRefresh().catch((err) => console.error('[tickerMetaRefresh] run failed', err));
+    },
+    { timezone: 'America/New_York' }
+  );
+
+  app.listen(PORT, () =>
+    console.log(`[pulse] listening on ${PORT}, cron registered for */5 * * * * and 0 6 * * *`)
+  );
 }

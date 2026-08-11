@@ -1,0 +1,2 @@
+ALTER TABLE trades ADD COLUMN exit_order_id TEXT;
+ALTER TABLE trades ADD COLUMN exit_attempt INTEGER NOT NULL DEFAULT 0;
