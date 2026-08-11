@@ -19,6 +19,11 @@ const OPERATORS = {
   lte: (a, b) => a <= b,
 };
 
+export const VOCABULARY = Object.freeze({
+  features: Object.freeze([...FEATURES]),
+  operators: Object.freeze(Object.keys(OPERATORS)),
+});
+
 function isMet(condition, features) {
   if (!FEATURES.has(condition.feature)) {
     throw new Error(`engine: unsupported feature "${condition.feature}"`);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { evaluate } from './engine.js';
+import { VOCABULARY, evaluate } from './engine.js';
 import { SEEDS } from './seeds.js';
 
 const socialBreakout = SEEDS.find((seed) => seed.name === 'social-breakout').params;
@@ -164,6 +164,21 @@ test('params outside the supported vocabulary throw rather than silently never f
   );
   assert.throws(() => evaluate({ entry: {} }, { in_position: false }), /condition block/);
   assert.throws(() => evaluate({ entry: { all: [] } }, { in_position: false }), /condition block/);
+});
+
+test('VOCABULARY is exactly the set evaluate accepts, so callers cannot advertise a wider one', () => {
+  for (const feature of VOCABULARY.features) {
+    assert.doesNotThrow(() =>
+      evaluate({ entry: { all: [{ feature, op: 'gt', value: 0 }] } }, { in_position: false })
+    );
+  }
+  for (const op of VOCABULARY.operators) {
+    assert.doesNotThrow(() =>
+      evaluate({ entry: { all: [{ feature: 'price_momentum', op, value: 0 }] } }, { in_position: false })
+    );
+  }
+  assert.equal(VOCABULARY.features.includes('short_interest_pct'), false);
+  assert.equal(VOCABULARY.operators.includes('eq'), false);
 });
 
 test('evaluate is pure: it does not mutate its arguments', () => {

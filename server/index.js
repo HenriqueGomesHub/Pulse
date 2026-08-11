@@ -3,6 +3,7 @@ import cron from 'node-cron';
 import { PORT, WATCHLIST } from './config.js';
 import { pool } from './db/pool.js';
 import { dashboardRoutes } from './routes/dashboard.js';
+import { evolution } from './workers/evolution.js';
 import { featureEngine } from './workers/featureEngine.js';
 import { marketIngest } from './workers/marketIngest.js';
 import { positionTracker } from './workers/positionTracker.js';
@@ -87,6 +88,9 @@ if (process.argv[2] === 'tick') {
 } else if (process.argv[2] === 'stats') {
   await statsRollup();
   await pool.end();
+} else if (process.argv[2] === 'evolve') {
+  await evolution();
+  await pool.end();
 } else {
   const app = express();
   app.get('/health', (req, res) => res.json({ ok: true }));
@@ -116,9 +120,19 @@ if (process.argv[2] === 'tick') {
     { timezone: 'America/New_York' }
   );
 
+  cron.schedule(
+    '0 3 * * 0',
+    () => {
+      evolution().catch((err) => console.error('[evolution] run failed', err));
+    },
+    { timezone: 'America/New_York' }
+  );
+
   await warnInactiveSeeds();
 
   app.listen(PORT, () =>
-    console.log(`[pulse] listening on ${PORT}, cron registered for */5 * * * *, 0 * * * * and 0 6 * * *`)
+    console.log(
+      `[pulse] listening on ${PORT}, cron registered for */5 * * * *, 0 * * * *, 0 6 * * * and 0 3 * * 0`
+    )
   );
 }

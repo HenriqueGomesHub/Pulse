@@ -1,11 +1,12 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Activity, Briefcase, GitBranch, ScrollText } from 'lucide-react';
+import { Activity, Briefcase, GitBranch, GitCommitVertical, ScrollText } from 'lucide-react';
 
 const NAV = [
   { to: '/', label: 'Watchlist', icon: Activity, end: true },
   { to: '/positions', label: 'Positions', icon: Briefcase },
   { to: '/strategies', label: 'Strategies', icon: GitBranch },
   { to: '/trades', label: 'Trade log', icon: ScrollText },
+  { to: '/evolution', label: 'Evolution', icon: GitCommitVertical },
 ];
 
 export default function Layout() {

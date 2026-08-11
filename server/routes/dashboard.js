@@ -286,6 +286,25 @@ const PNL_CURVE_SQL = `
   ORDER BY exit_ts, id
 `;
 
+const EVOLUTION_SQL = `
+  SELECT e.id::int AS id,
+         e.ts,
+         e.action,
+         e.rationale,
+         e.holdout_expectancy::float8 AS holdout_expectancy,
+         e.strategy_id::int AS strategy_id,
+         s.name AS strategy_name,
+         s.generation AS strategy_generation,
+         s.status AS strategy_status,
+         e.parent_id::int AS parent_id,
+         p.name AS parent_name,
+         p.generation AS parent_generation
+  FROM evolution_log e
+  LEFT JOIN strategies s ON s.id = e.strategy_id
+  LEFT JOIN strategies p ON p.id = e.parent_id
+  ORDER BY e.ts DESC, e.id DESC
+`;
+
 function exitStatus(params, features, pnlPct, holdHours) {
   const bag = { ...features, pnl_pct: pnlPct, hold_hours: holdHours };
   try {
@@ -365,6 +384,35 @@ dashboardRoutes.get(
   route(async (req, res) => {
     const { rows } = await pool.query(SIGNALS_SQL, [SIGNAL_FEED_LIMIT]);
     res.json(rows);
+  })
+);
+
+dashboardRoutes.get(
+  '/evolution',
+  route(async (req, res) => {
+    const { rows } = await pool.query(EVOLUTION_SQL);
+    res.json(
+      rows.map((row) => ({
+        id: row.id,
+        ts: row.ts,
+        action: row.action,
+        rationale: row.rationale,
+        holdout_expectancy: row.holdout_expectancy,
+        strategy:
+          row.strategy_id === null
+            ? null
+            : {
+                id: row.strategy_id,
+                name: row.strategy_name,
+                generation: row.strategy_generation,
+                status: row.strategy_status,
+              },
+        parent:
+          row.parent_id === null
+            ? null
+            : { id: row.parent_id, name: row.parent_name, generation: row.parent_generation },
+      }))
+    );
   })
 );
 
