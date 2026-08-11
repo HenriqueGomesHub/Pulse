@@ -9,9 +9,15 @@ export async function redditIngest() {
   const ts = new Date();
   const cutoff = ts.getTime() - HOUR_MS;
 
-  const batches = await Promise.all(
-    SUBREDDITS.flatMap((subreddit) => [fetchNewPosts(subreddit), fetchNewComments(subreddit)])
-  );
+  let batches;
+  try {
+    batches = await Promise.all(
+      SUBREDDITS.flatMap((subreddit) => [fetchNewPosts(subreddit), fetchNewComments(subreddit)])
+    );
+  } catch (error) {
+    console.warn(`[redditIngest] source fetch failed, skipping tick: ${error.message}`);
+    return;
+  }
   const recent = batches.flat().filter((item) => item.createdAt.getTime() >= cutoff);
 
   const totals = new Map(

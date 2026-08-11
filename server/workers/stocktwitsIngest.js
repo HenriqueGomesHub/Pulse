@@ -26,7 +26,13 @@ export async function stocktwitsIngest() {
   const params = [];
 
   for (const symbol of symbols) {
-    const messages = await fetchSymbolStream(symbol);
+    let messages;
+    try {
+      messages = await fetchSymbolStream(symbol);
+    } catch (error) {
+      console.warn(`[stocktwitsIngest] source fetch failed for ${symbol}, skipping tick: ${error.message}`);
+      return;
+    }
     const recent = messages.filter((message) => message.createdAt.getTime() >= cutoff);
     const bullish = recent.filter((message) => message.sentiment === 'Bullish').length;
     const bearish = recent.filter((message) => message.sentiment === 'Bearish').length;

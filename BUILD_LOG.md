@@ -73,6 +73,61 @@ with a real handle if Reddit access is ever restored.
 
 ---
 
+## Decisions recorded 2026-08-11
+
+Owner decisions on the blocker list. Two are policy and take effect immediately; four
+require a change on disk that has not landed yet (see the status table below).
+
+| # | Decision | Status |
+|---|---|---|
+| 1 | Use Railway public `DATABASE_URL` | **not on disk** — `.env` still resolves to `postgres.railway.internal` |
+| 2 | Keep dual-path Reddit; social verification DEFERRED to deployment | in effect |
+| 3 | Keep Stocktwits as written; verification DEFERRED to deployment | in effect |
+| 4 | Anthropic credit added | **not in effect** — API still returns "credit balance is too low" |
+| 5 | `quiet-precision.md` in repo root for phase 3 | **not on disk** — file not present |
+| 6 | `git remote add origin <url>` | **not configured** — no remote; the instruction still contained the literal placeholder |
+
+### DEFERRED-TO-DEPLOYMENT — social_snapshots population
+
+`social_snapshots` will remain empty until the app runs on Railway. Both social sources are
+blocked from the development machine (Reddit 403 at IP level, Stocktwits 403 Cloudflare
+challenge). This is a deferral, not a failure, and is excluded from the phase 1 gate.
+
+- **Reddit** — dual-path implementation stands: public JSON fallback now, OAuth once Reddit
+  approves the script app. Swap point is `TODO(#1)` in `server/services/reddit.js`.
+- **Stocktwits** — implementation stands as written. Cloudflare-blocked from dev machine;
+  retest from Railway egress after deployment; if still blocked there, drop the source and
+  rely on Reddit + market data.
+- No workarounds, scraping alternatives, or Cloudflare-bypass code are to be built.
+
+### AMENDED PHASE 1 GATE
+
+Supersedes the original gate. Passes when all four hold:
+
+- **(a)** migrations apply cleanly to the Railway database
+- **(b)** server boots and crons register
+- **(c)** market ingestion inserts real rows into `market_snapshots` for the watchlist
+- **(d)** both social ingest workers run without crashing, log their blocked-network
+  warnings, and insert zero rows
+
+### Downstream consequences of the deferral
+
+- `featureEngine` (phase 2) must handle NULL / absent social history — the same code path as
+  insufficient data for a z-score.
+- Strategy #1 (social-breakout) will emit no signals until social data flows. That is correct
+  behaviour, not a defect.
+- Phase 2's lifecycle verification uses the temporary-threshold method: lower strategy #1's
+  entry conditions so a signal fires on market data alone, run the full
+  signal → order → tracked → forced-exit → closed lifecycle against Alpaca during market
+  hours, then restore the real thresholds and record the restoration here.
+
+**Provenance note.** The temporary-threshold method and the NULL-z-score-on-insufficient-data
+rule are both owner instructions, not text found in `pulse-spec.md`. The spec does not mention
+either. They are sound and are being followed as directed; recorded here so a later reader
+does not go looking for them in the spec.
+
+---
+
 ## HALT — blockers requiring a human
 
 ### 1. `DATABASE_URL` is Railway-internal — blocks every phase
