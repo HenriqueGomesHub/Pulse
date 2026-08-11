@@ -52,8 +52,8 @@ function Position({ trade }) {
         <Stat label="PnL">
           <Num value={trade.pnl_pct} format={signedPct} tone={pnlTone(trade.pnl_pct)} reason="not marked yet" />
         </Stat>
-        <Stat label="Max drawdown">
-          <Num value={trade.max_drawdown_pct} format={pct} reason="not measured yet" />
+        <Stat label="Max adverse excursion">
+          <Num value={trade.trade_max_adverse_pct} format={pct} reason="not measured yet" />
         </Stat>
         <Stat label="Held">
           <Num value={trade.hold_hours} format={duration} reason="no entry timestamp" />

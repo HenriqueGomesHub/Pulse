@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://REPLACE-THIS-WITH-THE-RAILWAY-PUBLIC-DOMAIN/api/:path*"
+    }
+  ]
+}

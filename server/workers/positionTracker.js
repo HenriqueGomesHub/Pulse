@@ -8,7 +8,7 @@ const TERMINAL_UNFILLED = new Set(['canceled', 'expired', 'rejected', 'done_for_
 
 const OPEN_TRADES_SQL = `
   SELECT t.id, t.strategy_id, t.symbol, t.alpaca_order_id, t.exit_order_id, t.exit_attempt,
-         t.qty, t.entry_price, t.entry_ts, t.max_drawdown_pct, s.params
+         t.qty, t.entry_price, t.entry_ts, t.trade_max_adverse_pct, t.peak_price, s.params
   FROM trades t
   JOIN strategies s ON s.id = t.strategy_id
   WHERE t.status = 'open'
@@ -41,6 +41,11 @@ const DAY_TRADES_SQL = `
 
 function num(value) {
   return value === null || value === undefined ? null : Number(value);
+}
+
+function markAdverse(isShort, priorPeak, price) {
+  const peak = isShort ? Math.min(priorPeak, price) : Math.max(priorPeak, price);
+  return { peak, adversePct: ((isShort ? price - peak : peak - price) / peak) * 100 };
 }
 
 function easternDate(date) {
@@ -158,17 +163,19 @@ export async function positionTracker() {
         const finalPnlPct = isShort
           ? ((entryPrice - exitPrice) / entryPrice) * 100
           : ((exitPrice - entryPrice) / entryPrice) * 100;
+        const excursion = markAdverse(isShort, num(trade.peak_price) ?? entryPrice, exitPrice);
 
         await pool.query(
           `UPDATE trades
-           SET exit_price = $1, exit_ts = $2, pnl_pct = $3, max_drawdown_pct = $4, hold_hours = $5,
-               status = 'closed'
-           WHERE id = $6`,
+           SET exit_price = $1, exit_ts = $2, pnl_pct = $3, trade_max_adverse_pct = $4, peak_price = $5,
+               hold_hours = $6, status = 'closed'
+           WHERE id = $7`,
           [
             exitPrice,
             exitTs,
             finalPnlPct,
-            Math.max(num(trade.max_drawdown_pct) ?? 0, -finalPnlPct, 0),
+            Math.max(num(trade.trade_max_adverse_pct) ?? 0, excursion.adversePct),
+            excursion.peak,
             holdHours,
             trade.id,
           ]
@@ -219,20 +226,19 @@ export async function positionTracker() {
         ? ((entryPrice - currentPrice) / entryPrice) * 100
         : ((currentPrice - entryPrice) / entryPrice) * 100;
       const holdHours = (ts.getTime() - new Date(entryTs).getTime()) / HOUR_MS;
-      const maxDrawdownPct = Math.max(num(trade.max_drawdown_pct) ?? 0, -pnlPct, 0);
+      const excursion = markAdverse(isShort, num(trade.peak_price) ?? entryPrice, currentPrice);
+      const maxAdversePct = Math.max(num(trade.trade_max_adverse_pct) ?? 0, excursion.adversePct);
       bag = featureBag(featuresBySymbol.get(trade.symbol), pnlPct, holdHours);
       const signal = evaluate(trade.params, bag);
 
-      await pool.query('UPDATE trades SET pnl_pct = $1, max_drawdown_pct = $2, hold_hours = $3 WHERE id = $4', [
-        pnlPct,
-        maxDrawdownPct,
-        holdHours,
-        trade.id,
-      ]);
+      await pool.query(
+        'UPDATE trades SET pnl_pct = $1, trade_max_adverse_pct = $2, peak_price = $3, hold_hours = $4 WHERE id = $5',
+        [pnlPct, maxAdversePct, excursion.peak, holdHours, trade.id]
+      );
 
       if (!signal) {
         console.log(
-          `[positionTracker] trade ${trade.id} ${trade.symbol} open: pnl ${pnlPct.toFixed(2)}%, dd ${maxDrawdownPct.toFixed(2)}%, held ${holdHours.toFixed(2)}h`
+          `[positionTracker] trade ${trade.id} ${trade.symbol} open: pnl ${pnlPct.toFixed(2)}%, mae ${maxAdversePct.toFixed(2)}%, held ${holdHours.toFixed(2)}h`
         );
         continue;
       }

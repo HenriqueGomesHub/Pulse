@@ -35,13 +35,23 @@ strategies     (id, name, generation INT, params JSONB, status ENUM(active|retir
 signals        (id, strategy_id FK, symbol FK, ts, direction ENUM(entry|exit), conviction NUMERIC,
                 reasoning TEXT, feature_snapshot JSONB)
 trades         (id, strategy_id FK, symbol FK, entry_signal_id FK, exit_signal_id FK nullable,
-                alpaca_order_id, qty, entry_price, exit_price, entry_ts, exit_ts,
-                pnl_pct, max_drawdown_pct, hold_hours, status ENUM(open|closed|expired))
+                alpaca_order_id, exit_order_id, exit_attempt, qty, entry_price, exit_price,
+                peak_price, entry_ts, exit_ts,
+                pnl_pct, trade_max_adverse_pct, hold_hours, status ENUM(open|closed|expired))
 strategy_stats (strategy_id FK, window ENUM(7d|30d|all), trades_n, win_rate, avg_win_pct, avg_loss_pct,
                 expectancy, max_drawdown, sharpe_naive, updated_at, PK(strategy_id, window))
 evolution_log  (id, ts, action ENUM(retire|mutate|promote), strategy_id, parent_id, rationale TEXT,
                 holdout_expectancy NUMERIC)
 ```
+
+**Two different drawdowns — do not conflate them** *(owner decision, 2026-08-11)*.
+
+- `strategy_stats.max_drawdown` — **peak-to-trough decline of that strategy's cumulative PnL curve** over the stat window. This is the drawdown in the prime directive, and the one §6's evolution loop uses for retirement decisions. Computed by `statsRollup`.
+- `trades.trade_max_adverse_pct` — **maximum adverse excursion of a single trade from its own high-water mark**, stored as a positive magnitude. For a long the high-water mark is the highest price reached since entry; for a short it is the lowest. A trade that runs 10.00 → 15.00 → 12.00 records 20%, not 0. `trades.peak_price` persists that high-water mark across ticks.
+
+The per-trade column was originally named `max_drawdown_pct` and measured from entry rather than from peak, which made both its name and its value wrong. Renamed and corrected in migration `004`; `max(trade_max_adverse_pct)` is the worst single trade and is **not** a substitute for strategy drawdown.
+
+`trades.exit_order_id` and `trades.exit_attempt` (migration `002`) exist so an exit is reconcilable: the order id is recorded before submission and the attempt counter gives each retry a fresh deterministic `client_order_id`.
 
 ## 3. Backend structure (Express, Railway)
 

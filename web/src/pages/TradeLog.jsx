@@ -41,9 +41,6 @@ function Row({ trade }) {
           <Num value={trade.pnl_pct} format={signedPct} tone={pnlTone(trade.pnl_pct)} reason="no PnL recorded" />
         </td>
         <td className="right">
-          <Num value={trade.max_drawdown_pct} format={pct} reason="not measured" />
-        </td>
-        <td className="right">
           <Num value={trade.qty} format={qty} />
         </td>
         <td className="right">
@@ -80,7 +77,7 @@ function Row({ trade }) {
       </tr>
       {open ? (
         <tr id={`trade-${trade.id}-detail`}>
-          <td colSpan={11}>
+          <td colSpan={10}>
             <div className="detail">
               <div className="detail-grid">
                 <Reasoning title="Entry reasoning" text={trade.entry_reasoning} conviction={trade.entry_conviction} />
@@ -90,6 +87,10 @@ function Row({ trade }) {
                 Entered{' '}
                 {trade.entry_ts ? <InlineNum>{stamp(trade.entry_ts)}</InlineNum> : 'at an unrecorded time'} · trade{' '}
                 <InlineNum>#{trade.id}</InlineNum> · strategy <InlineNum>#{trade.strategy_id}</InlineNum>
+              </p>
+              <p>
+                Worst move against the position from its own high-water mark:{' '}
+                <Num value={trade.trade_max_adverse_pct} format={pct} reason="not measured" />
               </p>
             </div>
           </td>
@@ -245,9 +246,6 @@ export default function TradeLog() {
                 <th scope="col">Outcome</th>
                 <th scope="col" className="right">
                   PnL
-                </th>
-                <th scope="col" className="right">
-                  Max drawdown
                 </th>
                 <th scope="col" className="right">
                   Qty

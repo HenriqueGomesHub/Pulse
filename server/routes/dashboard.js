@@ -98,7 +98,7 @@ const OPEN_TRADES_SQL = `
          t.entry_price::float8 AS entry_price,
          t.entry_ts,
          t.pnl_pct::float8 AS pnl_pct,
-         t.max_drawdown_pct::float8 AS max_drawdown_pct,
+         t.trade_max_adverse_pct::float8 AS trade_max_adverse_pct,
          t.hold_hours::float8 AS hold_hours,
          json_build_object(
            'social_velocity', f.social_velocity::float8,
@@ -131,7 +131,7 @@ const CLOSED_TRADES_SQL = `
          t.entry_ts,
          t.exit_ts,
          t.pnl_pct::float8 AS pnl_pct,
-         t.max_drawdown_pct::float8 AS max_drawdown_pct,
+         t.trade_max_adverse_pct::float8 AS trade_max_adverse_pct,
          t.hold_hours::float8 AS hold_hours,
          CASE
            WHEN t.pnl_pct IS NULL THEN NULL
@@ -152,7 +152,7 @@ const CLOSED_TRADES_SQL = `
 
 const STRATEGIES_SQL = `
   WITH closed AS (
-    SELECT id, strategy_id, pnl_pct, max_drawdown_pct, exit_ts
+    SELECT id, strategy_id, pnl_pct, exit_ts
     FROM trades
     WHERE status = 'closed' AND pnl_pct IS NOT NULL
   ),
@@ -162,24 +162,34 @@ const STRATEGIES_SQL = `
            (count(*) FILTER (WHERE pnl_pct > 0))::float8 / count(*) AS win_rate,
            (avg(pnl_pct) FILTER (WHERE pnl_pct > 0))::float8 AS avg_win_pct,
            (avg(pnl_pct) FILTER (WHERE pnl_pct <= 0))::float8 AS avg_loss_pct,
-           avg(pnl_pct)::float8 AS expectancy,
-           max(max_drawdown_pct)::float8 AS max_drawdown
+           avg(pnl_pct)::float8 AS expectancy
     FROM closed
     GROUP BY strategy_id
   ),
-  curve AS (
-    SELECT strategy_id, json_agg(point ORDER BY ord) AS points
+  cumulative AS (
+    SELECT strategy_id, id, exit_ts, pnl_pct,
+           row_number() OVER (PARTITION BY strategy_id ORDER BY exit_ts, id) AS ord,
+           sum(pnl_pct) OVER (PARTITION BY strategy_id ORDER BY exit_ts, id) AS cum_pnl_pct
+    FROM closed
+  ),
+  drawdown AS (
+    SELECT strategy_id, max(GREATEST(peak, 0) - cum_pnl_pct)::float8 AS max_drawdown
     FROM (
-      SELECT strategy_id,
-             row_number() OVER (PARTITION BY strategy_id ORDER BY exit_ts, id) AS ord,
-             json_build_object(
-               'ts', ${isoUtc('exit_ts')},
-               'trade_id', id::int,
-               'pnl_pct', pnl_pct::float8,
-               'cum_pnl_pct', (sum(pnl_pct) OVER (PARTITION BY strategy_id ORDER BY exit_ts, id))::float8
-             ) AS point
-      FROM closed
-    ) c
+      SELECT strategy_id, cum_pnl_pct,
+             max(cum_pnl_pct) OVER (PARTITION BY strategy_id ORDER BY ord) AS peak
+      FROM cumulative
+    ) d
+    GROUP BY strategy_id
+  ),
+  curve AS (
+    SELECT strategy_id,
+           json_agg(json_build_object(
+             'ts', ${isoUtc('exit_ts')},
+             'trade_id', id::int,
+             'pnl_pct', pnl_pct::float8,
+             'cum_pnl_pct', cum_pnl_pct::float8
+           ) ORDER BY ord) AS points
+    FROM cumulative
     GROUP BY strategy_id
   )
   SELECT s.id::int AS id,
@@ -196,11 +206,12 @@ const STRATEGIES_SQL = `
          st.avg_win_pct,
          st.avg_loss_pct,
          st.expectancy,
-         st.max_drawdown,
+         d.max_drawdown,
          COALESCE(c.points, '[]'::json) AS equity_curve
   FROM strategies s
   LEFT JOIN strategies p ON p.id = s.parent_id
   LEFT JOIN stats st ON st.strategy_id = s.id
+  LEFT JOIN drawdown d ON d.strategy_id = s.id
   LEFT JOIN curve c ON c.strategy_id = s.id
   ORDER BY s.generation, s.id
 `;
@@ -234,6 +245,23 @@ const SIGNALS_SQL = `
 `;
 
 const PNL_TOTALS_SQL = `
+  WITH closed AS (
+    SELECT id, exit_ts, pnl_pct
+    FROM trades
+    WHERE status = 'closed' AND pnl_pct IS NOT NULL
+  ),
+  cumulative AS (
+    SELECT row_number() OVER (ORDER BY exit_ts, id) AS ord,
+           sum(pnl_pct) OVER (ORDER BY exit_ts, id) AS cum_pnl_pct
+    FROM closed
+  ),
+  drawdown AS (
+    SELECT max(GREATEST(peak, 0) - cum_pnl_pct)::float8 AS max_drawdown
+    FROM (
+      SELECT cum_pnl_pct, max(cum_pnl_pct) OVER (ORDER BY ord) AS peak
+      FROM cumulative
+    ) d
+  )
   SELECT (SELECT count(*) FROM trades WHERE status = 'open')::int AS open_n,
          count(*)::int AS closed_n,
          (count(*) FILTER (WHERE pnl_pct > 0))::int AS wins,
@@ -243,9 +271,8 @@ const PNL_TOTALS_SQL = `
          (avg(pnl_pct) FILTER (WHERE pnl_pct <= 0))::float8 AS avg_loss_pct,
          avg(pnl_pct)::float8 AS expectancy,
          sum(pnl_pct)::float8 AS total_pnl_pct,
-         max(max_drawdown_pct)::float8 AS max_drawdown
-  FROM trades
-  WHERE status = 'closed' AND pnl_pct IS NOT NULL
+         (SELECT max_drawdown FROM drawdown) AS max_drawdown
+  FROM closed
 `;
 
 const PNL_CURVE_SQL = `
