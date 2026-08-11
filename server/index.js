@@ -2,6 +2,7 @@ import express from 'express';
 import cron from 'node-cron';
 import { PORT, WATCHLIST } from './config.js';
 import { pool } from './db/pool.js';
+import { dashboardRoutes } from './routes/dashboard.js';
 import { featureEngine } from './workers/featureEngine.js';
 import { marketIngest } from './workers/marketIngest.js';
 import { positionTracker } from './workers/positionTracker.js';
@@ -74,6 +75,7 @@ if (process.argv[2] === 'tick') {
 } else {
   const app = express();
   app.get('/health', (req, res) => res.json({ ok: true }));
+  app.use('/api', dashboardRoutes);
 
   cron.schedule(
     '*/5 * * * *',

@@ -1,0 +1,335 @@
+import express from 'express';
+import { pool } from '../db/pool.js';
+
+const SPARKLINE_POINTS = 24;
+const ACTIVE_SIGNAL_HOURS = 24;
+const SIGNAL_FEED_LIMIT = 200;
+
+const OPERATORS = {
+  gt: (a, b) => a > b,
+  gte: (a, b) => a >= b,
+  lt: (a, b) => a < b,
+  lte: (a, b) => a <= b,
+};
+
+const isoUtc = (column) => `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+
+const WATCHLIST_SQL = `
+  WITH recent AS (
+    SELECT t.symbol, f.ts, f.mention_zscore, f.social_velocity, f.exhaustion_score,
+           row_number() OVER (PARTITION BY t.symbol ORDER BY f.ts DESC) AS rn
+    FROM tickers t
+    CROSS JOIN LATERAL (
+      SELECT ts, mention_zscore, social_velocity, exhaustion_score
+      FROM features fx
+      WHERE fx.symbol = t.symbol
+      ORDER BY fx.ts DESC
+      LIMIT $1::int
+    ) f
+  ),
+  sparkline AS (
+    SELECT symbol,
+           json_agg(json_build_object('ts', ${isoUtc('ts')}, 'mention_zscore', mention_zscore::float8)
+                    ORDER BY ts) AS points
+    FROM recent
+    GROUP BY symbol
+  ),
+  price AS (
+    SELECT DISTINCT ON (symbol) symbol, price
+    FROM market_snapshots
+    WHERE ts > now() - interval '1 day'
+    ORDER BY symbol, ts DESC
+  ),
+  active AS (
+    SELECT s.symbol,
+           max(s.conviction)::float8 AS max_conviction,
+           json_agg(json_build_object(
+             'id', s.id::int,
+             'strategy_id', s.strategy_id::int,
+             'strategy_name', st.name,
+             'direction', s.direction,
+             'conviction', s.conviction::float8,
+             'ts', ${isoUtc('s.ts')}
+           ) ORDER BY s.ts DESC) AS signals
+    FROM signals s
+    JOIN strategies st ON st.id = s.strategy_id
+    WHERE s.ts > now() - make_interval(hours => $2::int)
+    GROUP BY s.symbol
+  )
+  SELECT t.symbol,
+         t.name,
+         p.price::float8 AS price,
+         f.ts AS features_ts,
+         f.mention_zscore::float8 AS mention_zscore,
+         f.social_velocity::float8 AS social_velocity,
+         f.exhaustion_score::float8 AS exhaustion_score,
+         COALESCE(sp.points, '[]'::json) AS mention_zscore_sparkline,
+         a.max_conviction,
+         COALESCE(a.signals, '[]'::json) AS active_signals
+  FROM tickers t
+  LEFT JOIN price p ON p.symbol = t.symbol
+  LEFT JOIN recent f ON f.symbol = t.symbol AND f.rn = 1
+  LEFT JOIN sparkline sp ON sp.symbol = t.symbol
+  LEFT JOIN active a ON a.symbol = t.symbol
+  ORDER BY a.max_conviction DESC NULLS LAST, f.mention_zscore DESC NULLS LAST, t.symbol
+`;
+
+const OPEN_TRADES_SQL = `
+  SELECT t.id::int AS id,
+         t.symbol,
+         t.strategy_id::int AS strategy_id,
+         st.name AS strategy_name,
+         st.params AS params,
+         t.qty::float8 AS qty,
+         t.entry_price::float8 AS entry_price,
+         t.entry_ts,
+         t.pnl_pct::float8 AS pnl_pct,
+         t.max_drawdown_pct::float8 AS max_drawdown_pct,
+         t.hold_hours::float8 AS hold_hours,
+         json_build_object(
+           'social_velocity', f.social_velocity::float8,
+           'social_accel', f.social_accel::float8,
+           'author_quality', f.author_quality::float8,
+           'mention_zscore', f.mention_zscore::float8,
+           'mentions_1h', f.mentions_1h::float8,
+           'unique_authors_1h', f.unique_authors_1h::float8,
+           'rel_volume_zscore', f.rel_volume_zscore::float8,
+           'price_momentum', f.price_momentum::float8,
+           'exhaustion_score', f.exhaustion_score::float8
+         ) AS features
+  FROM trades t
+  JOIN strategies st ON st.id = t.strategy_id
+  LEFT JOIN LATERAL (
+    SELECT * FROM features fx WHERE fx.symbol = t.symbol ORDER BY fx.ts DESC LIMIT 1
+  ) f ON true
+  WHERE t.status = 'open'
+  ORDER BY t.entry_ts, t.id
+`;
+
+const CLOSED_TRADES_SQL = `
+  SELECT t.id::int AS id,
+         t.symbol,
+         t.strategy_id::int AS strategy_id,
+         st.name AS strategy_name,
+         t.qty::float8 AS qty,
+         t.entry_price::float8 AS entry_price,
+         t.exit_price::float8 AS exit_price,
+         t.entry_ts,
+         t.exit_ts,
+         t.pnl_pct::float8 AS pnl_pct,
+         t.max_drawdown_pct::float8 AS max_drawdown_pct,
+         t.hold_hours::float8 AS hold_hours,
+         CASE
+           WHEN t.pnl_pct IS NULL THEN NULL
+           WHEN t.pnl_pct > 0 THEN 'win'
+           ELSE 'loss'
+         END AS outcome,
+         es.reasoning AS entry_reasoning,
+         es.conviction::float8 AS entry_conviction,
+         xs.reasoning AS exit_reasoning,
+         xs.conviction::float8 AS exit_conviction
+  FROM trades t
+  JOIN strategies st ON st.id = t.strategy_id
+  JOIN signals es ON es.id = t.entry_signal_id
+  LEFT JOIN signals xs ON xs.id = t.exit_signal_id
+  WHERE t.status = 'closed'
+  ORDER BY t.exit_ts DESC NULLS LAST, t.id DESC
+`;
+
+const STRATEGIES_SQL = `
+  WITH closed AS (
+    SELECT id, strategy_id, pnl_pct, max_drawdown_pct, exit_ts
+    FROM trades
+    WHERE status = 'closed' AND pnl_pct IS NOT NULL
+  ),
+  stats AS (
+    SELECT strategy_id,
+           count(*)::int AS trades_n,
+           (count(*) FILTER (WHERE pnl_pct > 0))::float8 / count(*) AS win_rate,
+           (avg(pnl_pct) FILTER (WHERE pnl_pct > 0))::float8 AS avg_win_pct,
+           (avg(pnl_pct) FILTER (WHERE pnl_pct <= 0))::float8 AS avg_loss_pct,
+           avg(pnl_pct)::float8 AS expectancy,
+           max(max_drawdown_pct)::float8 AS max_drawdown
+    FROM closed
+    GROUP BY strategy_id
+  ),
+  curve AS (
+    SELECT strategy_id, json_agg(point ORDER BY ord) AS points
+    FROM (
+      SELECT strategy_id,
+             row_number() OVER (PARTITION BY strategy_id ORDER BY exit_ts, id) AS ord,
+             json_build_object(
+               'ts', ${isoUtc('exit_ts')},
+               'trade_id', id::int,
+               'pnl_pct', pnl_pct::float8,
+               'cum_pnl_pct', (sum(pnl_pct) OVER (PARTITION BY strategy_id ORDER BY exit_ts, id))::float8
+             ) AS point
+      FROM closed
+    ) c
+    GROUP BY strategy_id
+  )
+  SELECT s.id::int AS id,
+         s.name,
+         s.generation,
+         s.status,
+         s.params,
+         s.created_at,
+         p.id::int AS parent_id,
+         p.name AS parent_name,
+         p.generation AS parent_generation,
+         COALESCE(st.trades_n, 0) AS trades_n,
+         st.win_rate,
+         st.avg_win_pct,
+         st.avg_loss_pct,
+         st.expectancy,
+         st.max_drawdown,
+         COALESCE(c.points, '[]'::json) AS equity_curve
+  FROM strategies s
+  LEFT JOIN strategies p ON p.id = s.parent_id
+  LEFT JOIN stats st ON st.strategy_id = s.id
+  LEFT JOIN curve c ON c.strategy_id = s.id
+  ORDER BY s.generation, s.id
+`;
+
+const SIGNALS_SQL = `
+  WITH feed AS (
+    SELECT id, ts, symbol, strategy_id, direction, conviction, reasoning, feature_snapshot
+    FROM signals
+    ORDER BY ts DESC, id DESC
+    LIMIT $1::int
+  )
+  SELECT s.id::int AS id,
+         s.ts,
+         s.symbol,
+         s.strategy_id::int AS strategy_id,
+         st.name AS strategy_name,
+         s.direction,
+         s.conviction::float8 AS conviction,
+         s.reasoning,
+         s.feature_snapshot,
+         t.trade_id
+  FROM feed s
+  JOIN strategies st ON st.id = s.strategy_id
+  LEFT JOIN LATERAL (
+    SELECT id::int AS trade_id
+    FROM trades tr
+    WHERE tr.entry_signal_id = s.id OR tr.exit_signal_id = s.id
+    LIMIT 1
+  ) t ON true
+  ORDER BY s.ts DESC, s.id DESC
+`;
+
+const PNL_TOTALS_SQL = `
+  SELECT (SELECT count(*) FROM trades WHERE status = 'open')::int AS open_n,
+         count(*)::int AS closed_n,
+         (count(*) FILTER (WHERE pnl_pct > 0))::int AS wins,
+         (count(*) FILTER (WHERE pnl_pct <= 0))::int AS losses,
+         ((count(*) FILTER (WHERE pnl_pct > 0))::float8 / NULLIF(count(*), 0)) AS win_rate,
+         (avg(pnl_pct) FILTER (WHERE pnl_pct > 0))::float8 AS avg_win_pct,
+         (avg(pnl_pct) FILTER (WHERE pnl_pct <= 0))::float8 AS avg_loss_pct,
+         avg(pnl_pct)::float8 AS expectancy,
+         sum(pnl_pct)::float8 AS total_pnl_pct,
+         max(max_drawdown_pct)::float8 AS max_drawdown
+  FROM trades
+  WHERE status = 'closed' AND pnl_pct IS NOT NULL
+`;
+
+const PNL_CURVE_SQL = `
+  SELECT ${isoUtc('exit_ts')} AS ts,
+         id::int AS trade_id,
+         symbol,
+         pnl_pct::float8 AS pnl_pct,
+         (sum(pnl_pct) OVER (ORDER BY exit_ts, id))::float8 AS cum_pnl_pct
+  FROM trades
+  WHERE status = 'closed' AND pnl_pct IS NOT NULL
+  ORDER BY exit_ts, id
+`;
+
+function exitConditions(params, features, pnlPct, holdHours) {
+  const bag = { ...features, pnl_pct: pnlPct, hold_hours: holdHours };
+  const conditions = params.exit.all ?? params.exit.any;
+  return conditions.map((condition) => {
+    const current = bag[condition.feature] ?? null;
+    return {
+      feature: condition.feature,
+      op: condition.op,
+      value: condition.value,
+      current,
+      met: Number.isFinite(current) && OPERATORS[condition.op](current, condition.value),
+    };
+  });
+}
+
+const route = (handler) => (req, res, next) => handler(req, res).catch(next);
+
+export const dashboardRoutes = express.Router();
+
+dashboardRoutes.get(
+  '/watchlist',
+  route(async (req, res) => {
+    const { rows } = await pool.query(WATCHLIST_SQL, [SPARKLINE_POINTS, ACTIVE_SIGNAL_HOURS]);
+    res.json(rows);
+  })
+);
+
+dashboardRoutes.get(
+  '/trades',
+  route(async (req, res) => {
+    const [open, closed] = await Promise.all([pool.query(OPEN_TRADES_SQL), pool.query(CLOSED_TRADES_SQL)]);
+    res.json({
+      open: open.rows.map(({ params, features, ...trade }) => ({
+        ...trade,
+        side: params.side,
+        exit_logic: params.exit.all ? 'all' : 'any',
+        exit_conditions: exitConditions(params, features, trade.pnl_pct, trade.hold_hours),
+      })),
+      closed: closed.rows,
+    });
+  })
+);
+
+dashboardRoutes.get(
+  '/strategies',
+  route(async (req, res) => {
+    const { rows } = await pool.query(STRATEGIES_SQL);
+    res.json(
+      rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        generation: row.generation,
+        status: row.status,
+        params: row.params,
+        created_at: row.created_at,
+        parent:
+          row.parent_id === null
+            ? null
+            : { id: row.parent_id, name: row.parent_name, generation: row.parent_generation },
+        stats: {
+          trades_n: row.trades_n,
+          win_rate: row.win_rate,
+          avg_win_pct: row.avg_win_pct,
+          avg_loss_pct: row.avg_loss_pct,
+          expectancy: row.expectancy,
+          max_drawdown: row.max_drawdown,
+        },
+        equity_curve: row.equity_curve,
+      }))
+    );
+  })
+);
+
+dashboardRoutes.get(
+  '/signals',
+  route(async (req, res) => {
+    const { rows } = await pool.query(SIGNALS_SQL, [SIGNAL_FEED_LIMIT]);
+    res.json(rows);
+  })
+);
+
+dashboardRoutes.get(
+  '/pnl',
+  route(async (req, res) => {
+    const [totals, curve] = await Promise.all([pool.query(PNL_TOTALS_SQL), pool.query(PNL_CURVE_SQL)]);
+    res.json({ totals: totals.rows[0], equity_curve: curve.rows });
+  })
+);
