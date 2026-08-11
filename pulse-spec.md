@@ -93,12 +93,30 @@ evolution_log  (id, ts, action ENUM(retire|mutate|promote), strategy_id, parent_
 
 **Insufficient data → NULL** *(owner decision, 2026-08-11)*. Any feature computed from fewer observations than its window requires is written as NULL — never 0, never a partial value. Absent social history is the same case, not a special one: with no `social_snapshots` rows for a ticker, `social_velocity`, `social_accel`, `mention_zscore` and `author_quality` are all NULL. Strategies must treat NULL as "condition not met" rather than as a numeric comparison.
 
+**Floored z-score denominator for `mention_zscore`** *(owner decision, 2026-08-11)*. Mention baselines are zero-inflated: a row is written for every watchlist ticker every tick, so an unmentioned ticker contributes `mentions_1h = 0`. Over 7 days that is ~2016 near-zero observations with mean ≈ 0.0005 and stddev ≈ 0.022, and a *single* mention scores z ≈ 45 — `mention_zscore > 3` degenerates to "mentioned at least once".
+
+Zero rows stay in the baseline — silence is real data. Instead the denominator is floored:
+
+```
+mention_zscore = (x − mean) / max(std, 1.0)
+```
+
+This restores the meaning of "3-sigma spike": clearing `> 3` now requires genuine mention volume rather than one post.
+
+Applied to `mention_zscore` only. `rel_volume_zscore` was measured against live data and is **not** degenerate — n = 310 over 30 days, mean 0.3308, stddev 0.3068, range 0.0054–1.9732, zero zero-valued rows. A floor of 1.0 there would crush every z-score toward zero and permanently disable `rel_volume_zscore > 2`, so it is deliberately left unfloored.
+
+Z-scores alone remain scale-blind, so strategies gating on attention must also carry absolute-substance conditions — see §5.
+
 ## 5. Generation-0 strategies (seeds.js)
 
 Each strategy = JSONB params interpreted by the same pure `engine.js` — evolution mutates params, never code.
 
-1. **social-breakout** — entry: mention_zscore > 3 AND social_accel > 0 AND rel_volume_zscore > 2; exit: exhaustion_score > threshold OR stop −8% OR target +15% OR max hold 3 days
+1. **social-breakout** — entry: mention_zscore > 3 AND social_accel > 0 AND rel_volume_zscore > 2 AND mentions_1h ≥ 5 AND unique_authors_1h ≥ 3; exit: exhaustion_score > threshold OR stop −8% OR target +15% OR max hold 3 days
+
+   *The two absolute-substance conditions are an owner decision of 2026-08-11.* A z-score is scale-blind — it says a ticker is unusually talked-about relative to its own history, not that anyone is actually talking about it. Paired with the floored denominator in §4, they stop a single post from triggering an entry.
 2. **squeeze-setup** — entry: short_interest_pct > 15 AND mention_zscore > 2 AND price_momentum_1d > 3%; exit: exhaustion OR stop −10% OR target +25% OR 5 days
+
+   *Short-interest source (owner decision, 2026-08-11).* Alpaca does not expose short interest, so `tickers.short_interest_pct` is NULL and this strategy cannot fire. It comes from FINRA's free API (bi-monthly publication — adequate for a slow-moving level gate), via `FINRA_API_CLIENT` / `FINRA_API_SECRET`. When those exist in env, `tickerMetaRefresh` fetches `short_interest_pct` on its daily run using plain HTTPS `fetch` and no new dependency; if FINRA genuinely requires an SDK, halt rather than adding one. When the credentials are absent, seed #2 is inserted with `status = 'candidate'` rather than `'active'`, and a warning is logged at boot for as long as it stays NULL-blocked. **A strategy must never sit `active` while structurally unable to fire** — that would silently distort the active-strategy count and the evolution cap in §6.
 3. **quiet-accumulation** — entry: rel_volume_zscore > 2 AND price_momentum_1h > 1% AND mention_zscore < 1 (volume before crowd), exit on social spike arrival (sell into attention) OR stop −6%
 4. **fade-the-peak** — entry (short via Alpaca paper): exhaustion_score > high threshold AND price up > 30% in 2 days; exit: −10% from entry (profit) OR +8% (stop) OR 2 days
 

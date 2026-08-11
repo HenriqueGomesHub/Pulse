@@ -13,6 +13,44 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 
 ---
 
+## Owner decisions 2026-08-11 (second set)
+
+### H4 resolved — floored z-score + absolute-substance gates
+
+`mention_zscore` keeps zero-observation rows in its baseline (silence is real data), but the
+denominator is floored: `z = (x − mean) / max(std, 1.0)`. Seed #1's entry additionally gains
+`mentions_1h >= 5 AND unique_authors_1h >= 3`. Together these restore the meaning of
+"3-sigma spike" and stop a single post from triggering an entry once social data flows.
+
+**The floor is NOT applied to `rel_volume_zscore`.** The owner made this conditional on
+whether it shows the same degenerate baseline. Measured against live data — n = 310 over
+30 days, mean 0.3308, stddev 0.3068, range 0.0054–1.9732, **zero** zero-valued rows. That is
+a genuine continuous distribution whose spread is comparable to its mean, unlike the
+zero-inflated mention baseline. A 1.0 floor would crush every z-score toward zero and
+permanently disable `rel_volume_zscore > 2`, so it is left unfloored.
+
+Recorded in spec §4 and §5.1.
+
+### Seed #2 short-interest source — FINRA
+
+`short_interest_pct` comes from FINRA's free API (bi-monthly publication, adequate for a
+slow-moving level gate), via `FINRA_API_CLIENT` / `FINRA_API_SECRET`. Owner registration at
+developer.finra.org is in progress.
+
+Phase 4 rule: if the credentials exist in env, `tickerMetaRefresh` fetches
+`short_interest_pct` on its daily run using plain HTTPS `fetch` and no new dependency — halt
+if FINRA genuinely requires an SDK. If they are absent when phase 4 runs, seed #2 is inserted
+with `status = 'candidate'` rather than `'active'`, with a warning logged at boot while it
+stays NULL-blocked. A strategy must never sit `active` while structurally unable to fire.
+
+Recorded in spec §5.2.
+
+### Anthropic billing — RESOLVED
+
+Retested: 1-token `claude-haiku-4-5` call returns **200 OK**. No phase 4 halt on this.
+
+---
+
 ## Phase 3 — HALTED AT START
 
 `quiet-precision.md` is still not in the repo root. Per the owner decision recorded above,
