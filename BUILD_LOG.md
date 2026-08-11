@@ -7,7 +7,7 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 |---|---|---|
 | 1 — skeleton + data in | **PASSED** (amended gate) | 2026-08-11 |
 | 2 — features + one dumb strategy | **PASSED** | 2026-08-11 |
-| 3 — dashboard | **HALTED at start** — `quiet-precision.md` missing | — |
+| 3 — dashboard | **PASSED** | 2026-08-11 |
 | 4 — full strategy set + stats | not started | — |
 | 5 — evolution | not started | — |
 
@@ -75,14 +75,110 @@ Retested: 1-token `claude-haiku-4-5` call returns **200 OK**. No phase 4 halt on
 
 ---
 
-## Phase 3 — HALTED AT START
+## Phase 3 — GATE PASSED 2026-08-11
 
-`quiet-precision.md` is still not in the repo root. Per the owner decision recorded above,
-phase 2 proceeded without it and the run halts here rather than guessing at a design system.
-Spec §7 states "Quiet Precision v2.1 system doc applies" to all five dashboard pages.
+`quiet-precision.md` was supplied by the owner and is committed at the repo root, unblocking
+this phase.
 
-To resume: put `quiet-precision.md` in the repo root, or state that phase 3 proceeds without
-it. Nothing else blocks phase 3 — the API has real data to serve.
+### Backend — five endpoints (`server/routes/dashboard.js`)
+
+`/api/watchlist`, `/api/trades`, `/api/strategies`, `/api/signals`, `/api/pnl`, all read-only,
+all verified HTTP 200 against the live Railway database:
+
+| endpoint | payload | contents |
+|---|---|---|
+| `/api/watchlist` | 32.8 KB | 20 tickers, 24-point sparkline each, active signals |
+| `/api/trades` | 1.3 KB | `{ open: [], closed: [3] }` |
+| `/api/strategies` | 1.1 KB | params, stats, equity curve, parent |
+| `/api/signals` | 2.6 KB | 6 signals with feature snapshots |
+| `/api/pnl` | 634 B | portfolio totals + equity curve |
+
+Positions and Trade log are both served from `/api/trades` rather than adding a sixth
+endpoint. Every `NUMERIC` is cast `::float8` and every `BIGINT` id `::int` **in SQL**, so no
+number crosses the wire as a string. All SQL is parameterised; no N+1; no endpoint mutates.
+
+`strategy_stats` is phase 4, so per-strategy expectancy / win rate / drawdown are computed
+live from closed `trades` in the shape `statsRollup` will later fill. Audit checked the
+arithmetic by hand against the live DB: expectancy `−0.06779431996033554` = `avg(pnl_pct)`
+over the three closed trades, matching exactly.
+
+### Frontend — `web/` (Vite + React)
+
+Four pages: Watchlist, Positions, Strategies, Trade log. Polling every 30s per spec §7, one
+interval per hook, `AbortController` on cleanup — verified no leak across route changes.
+Dependencies are exactly the approved set; `lucide-react` per the owner's design-doc
+allowance. Build: 604 KB raw / 182 KB gzip.
+
+**Evolution page deliberately not built** — `evolution_log` is phase 5 and no endpoint exists.
+Building it now would mean a placeholder, which the phase rules forbid. It lands in phase 5.
+
+`/api/signals` is currently unconsumed by any page: spec §7 defines no signals page, and the
+signal data the pages need already arrives inside `/api/watchlist` and `/api/trades`. The
+endpoint exists because spec §3 mandates it.
+
+### Design-system compliance (`quiet-precision.md`)
+
+Audited concretely against the CSS and JSX: every token matches the specified hexes; the
+accent `#276BF0` appears in exactly two rules (links, `:focus-visible`) giving 0–1 uses per
+screen against a budget of 3; primary button is `#1C1D1F`; colour is used only for data;
+Lucide icons are all 16px / 1.5px stroke / gray / labelled; no gradients, glows, emoji, zebra
+striping, second accent, or dark mode.
+
+**NULL is the normal case today** and is handled deliberately — an em dash plus a specific
+screen-reader reason ("no recent quote", "no social observations", "conviction not scored").
+The all-null sparkline renders a dashed hairline, *not* a flatline at zero implying real data.
+The Watchlist lead sentence states plainly that the list is unranked while every conviction
+and z-score is null, rather than implying a ranking exists.
+
+### Audit + fix cycle 1
+
+No CRITICAL or HIGH findings. Four MEDIUMs fixed:
+
+- **Timestamps** rendered in the viewer's locale and timezone, unlabelled — the owner's machine
+  showed `"11 de ago., 13:53"`, Portuguese, at UTC−3. Every session rule in this system is
+  `America/New_York`, so times that cannot be tied to session boundaries are actively
+  misleading. Now pinned to `en-US` / `America/New_York` with the zone shown:
+  `Aug 11, 12:53 EDT`. DST verified (`Jan 5, 16:53 EST`).
+- **"24h trend" showed the last 24 rows**, roughly 1–2 hours, beside a "Signals (24h)" column
+  that was a true 24-hour window. Fixed by making the data match the label: 24 hourly buckets
+  over a fixed 24-hour window. Verified live — 24 points spanning 22:00Z → 21:00Z, 1.8 ms.
+- **The route re-implemented `engine.js`'s operator table**, so a phase-5 vocabulary mutation
+  or a malformed `params.exit` would throw and 500 `/api/trades`, taking down *both* Positions
+  and Trade log. The route now imports `describeBlock` from `engine.js`; `evaluate()` is
+  unchanged and still pure. Both crash cases now return 200 with the error surfaced in the UI.
+- **Numbers embedded in prose were set in Geist, not Geist Mono**, against the design doc's
+  explicit Pulse clause. Fixed with an inline mono span so digits change face without
+  dragging the sentence with them. Also reversed `.detail .reason` (Claude's prose reasoning)
+  from mono back to sans — from phase 4 that field holds paragraphs.
+
+Verified after the cycle: `npm test` 19/19, `npm run build` clean, all five endpoints 200,
+sparkline 24 points, `OPERATORS` gone from the route, timezone and mono class present in the
+built bundle.
+
+### Open — needs an owner decision
+
+**`max_drawdown` is the worst single trade, not the strategy's drawdown.** `max(max_drawdown_pct)`
+returns `0.10%` while the equity curve from the *same endpoint* bottoms at `−0.20%` — the
+Strategies card shows both, disagreeing by 2×, right now. Ten consecutive −5% trades would
+report "max drawdown 5%" for a strategy that actually went 50% peak-to-trough. Max drawdown is
+half the spec's prime directive, phase 5 retires strategies on it, and phase 4's `statsRollup`
+will inherit whichever definition is chosen. This compounds deferred M4 (per-trade drawdown is
+measured from entry rather than from peak).
+
+### Noted
+
+Duplicate `features` rows appeared from 20:15Z (two per tick) because two backend instances
+were running concurrently during verification — an artifact of testing, not a product defect,
+now stopped. It does demonstrate the deferred "no cron overlap guard" concretely: two
+instances, or a Railway redeploy overlap, double-write every table.
+
+Also worth setting on Railway: `NODE_ENV=production`, or Express 4's default error handler
+puts stack traces in response bodies.
+
+**CORS / production API base URL remains open.** The frontend calls `/api/*` relative, resolved
+by the Vite dev proxy. A Vercel-hosted build has no route to Railway. The deployment decision
+must cover both the headers and the base URL — a Vercel rewrite keeping it same-origin avoids
+CORS entirely.
 
 ---
 

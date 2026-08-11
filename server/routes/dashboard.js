@@ -1,38 +1,52 @@
 import express from 'express';
 import { pool } from '../db/pool.js';
+import { describeBlock } from '../strategies/engine.js';
 
-const SPARKLINE_POINTS = 24;
+const SPARKLINE_HOURS = 24;
 const ACTIVE_SIGNAL_HOURS = 24;
 const SIGNAL_FEED_LIMIT = 200;
-
-const OPERATORS = {
-  gt: (a, b) => a > b,
-  gte: (a, b) => a >= b,
-  lt: (a, b) => a < b,
-  lte: (a, b) => a <= b,
-};
 
 const isoUtc = (column) => `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
 
 const WATCHLIST_SQL = `
-  WITH recent AS (
-    SELECT t.symbol, f.ts, f.mention_zscore, f.social_velocity, f.exhaustion_score,
-           row_number() OVER (PARTITION BY t.symbol ORDER BY f.ts DESC) AS rn
+  WITH bounds AS (
+    SELECT (date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS last_hour,
+           ((date_trunc('hour', now() AT TIME ZONE 'UTC') - make_interval(hours => $1::int - 1)) AT TIME ZONE 'UTC')
+             AS first_hour
+  ),
+  hour_slot AS (
+    SELECT generate_series(b.first_hour, b.last_hour, interval '1 hour') AS ts
+    FROM bounds b
+  ),
+  hourly AS (
+    SELECT t.symbol, f.ts, avg(f.mention_zscore)::float8 AS mention_zscore
+    FROM tickers t
+    CROSS JOIN LATERAL (
+      SELECT (date_trunc('hour', fx.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS ts, fx.mention_zscore
+      FROM features fx
+      WHERE fx.symbol = t.symbol AND fx.ts >= (SELECT first_hour FROM bounds)
+    ) f
+    GROUP BY t.symbol, f.ts
+  ),
+  sparkline AS (
+    SELECT t.symbol,
+           json_agg(json_build_object('ts', ${isoUtc('s.ts')}, 'mention_zscore', h.mention_zscore)
+                    ORDER BY s.ts) AS points
+    FROM tickers t
+    CROSS JOIN hour_slot s
+    LEFT JOIN hourly h ON h.symbol = t.symbol AND h.ts = s.ts
+    GROUP BY t.symbol
+  ),
+  latest AS (
+    SELECT t.symbol, f.ts, f.mention_zscore, f.social_velocity, f.exhaustion_score
     FROM tickers t
     CROSS JOIN LATERAL (
       SELECT ts, mention_zscore, social_velocity, exhaustion_score
       FROM features fx
       WHERE fx.symbol = t.symbol
       ORDER BY fx.ts DESC
-      LIMIT $1::int
+      LIMIT 1
     ) f
-  ),
-  sparkline AS (
-    SELECT symbol,
-           json_agg(json_build_object('ts', ${isoUtc('ts')}, 'mention_zscore', mention_zscore::float8)
-                    ORDER BY ts) AS points
-    FROM recent
-    GROUP BY symbol
   ),
   price AS (
     SELECT DISTINCT ON (symbol) symbol, price
@@ -68,7 +82,7 @@ const WATCHLIST_SQL = `
          COALESCE(a.signals, '[]'::json) AS active_signals
   FROM tickers t
   LEFT JOIN price p ON p.symbol = t.symbol
-  LEFT JOIN recent f ON f.symbol = t.symbol AND f.rn = 1
+  LEFT JOIN latest f ON f.symbol = t.symbol
   LEFT JOIN sparkline sp ON sp.symbol = t.symbol
   LEFT JOIN active a ON a.symbol = t.symbol
   ORDER BY a.max_conviction DESC NULLS LAST, f.mention_zscore DESC NULLS LAST, t.symbol
@@ -245,19 +259,21 @@ const PNL_CURVE_SQL = `
   ORDER BY exit_ts, id
 `;
 
-function exitConditions(params, features, pnlPct, holdHours) {
+function exitStatus(params, features, pnlPct, holdHours) {
   const bag = { ...features, pnl_pct: pnlPct, hold_hours: holdHours };
-  const conditions = params.exit.all ?? params.exit.any;
-  return conditions.map((condition) => {
-    const current = bag[condition.feature] ?? null;
+  try {
+    const { logic, conditions } = describeBlock(params.exit, bag);
     return {
-      feature: condition.feature,
-      op: condition.op,
-      value: condition.value,
-      current,
-      met: Number.isFinite(current) && OPERATORS[condition.op](current, condition.value),
+      exit_logic: logic,
+      exit_conditions: conditions.map((condition) => ({
+        ...condition,
+        current: bag[condition.feature] ?? null,
+      })),
+      exit_error: null,
     };
-  });
+  } catch (error) {
+    return { exit_logic: null, exit_conditions: [], exit_error: error.message };
+  }
 }
 
 const route = (handler) => (req, res, next) => handler(req, res).catch(next);
@@ -267,7 +283,7 @@ export const dashboardRoutes = express.Router();
 dashboardRoutes.get(
   '/watchlist',
   route(async (req, res) => {
-    const { rows } = await pool.query(WATCHLIST_SQL, [SPARKLINE_POINTS, ACTIVE_SIGNAL_HOURS]);
+    const { rows } = await pool.query(WATCHLIST_SQL, [SPARKLINE_HOURS, ACTIVE_SIGNAL_HOURS]);
     res.json(rows);
   })
 );
@@ -280,8 +296,7 @@ dashboardRoutes.get(
       open: open.rows.map(({ params, features, ...trade }) => ({
         ...trade,
         side: params.side,
-        exit_logic: params.exit.all ? 'all' : 'any',
-        exit_conditions: exitConditions(params, features, trade.pnl_pct, trade.hold_hours),
+        ...exitStatus(params, features, trade.pnl_pct, trade.hold_hours),
       })),
       closed: closed.rows,
     });

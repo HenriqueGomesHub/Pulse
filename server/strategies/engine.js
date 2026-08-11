@@ -36,15 +36,32 @@ function isMet(condition, features) {
   return operator(value, condition.value);
 }
 
-function evaluateBlock(block, features) {
+function blockConditions(block) {
   const conditions = block?.all ?? block?.any;
   if (!Array.isArray(conditions) || conditions.length === 0) {
     throw new Error('engine: condition block must be { all: [...] } or { any: [...] } with at least one condition');
   }
+  return conditions;
+}
 
+function evaluateBlock(block, features) {
+  const conditions = blockConditions(block);
   const met = conditions.filter((condition) => isMet(condition, features));
   if (block.all) return met.length === conditions.length ? met : null;
   return met.length > 0 ? met : null;
+}
+
+export function describeBlock(block, features) {
+  const conditions = blockConditions(block);
+  return {
+    logic: block.all ? 'all' : 'any',
+    conditions: conditions.map((condition) => ({
+      feature: condition.feature,
+      op: condition.op,
+      value: condition.value,
+      met: isMet(condition, features),
+    })),
+  };
 }
 
 export function evaluate(strategyParams, features) {
