@@ -64,6 +64,7 @@ export const SEEDS = [
         any: [
           { feature: 'mention_zscore', op: 'gt', value: 3 },
           { feature: 'pnl_pct', op: 'lte', value: -6 },
+          { feature: 'hold_hours', op: 'gte', value: 336 },
         ],
       },
     },

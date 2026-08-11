@@ -156,16 +156,52 @@ runs were after hours.
   semantics: promotion is the only thing that moves the population, so an overstated candidate
   makes swaps rest on thinner evidence than they appear to.
 
-### Still open
+### Days-to-cover divergence from FINRA's published figure — ACCEPTED, do not "fix"
 
-- **Seed #3 would fail the exit-shape check.** Spec §5.3 gives `quiet-accumulation` a stop but no
-  time bound, so it can hold a winner indefinitely. Nothing is broken — the check applies only to
-  Claude's proposals, not owner seeds — but the spec defines a strategy the evolution loop would
-  refuse to invent. Seed #3 is the one seed fully expressible today and will likely trade first.
-- **Stale prompt prose.** `CONDITION_SCHEMA`'s description still says "Every other feature is
-  NULL until social data flows", which is now false for `days_to_cover` and both momentum
-  features. It is text sent to Claude, so it may bias proposals away from features that now carry
-  real data.
+Our `days_to_cover` differs from FINRA's own `daysToCoverQuantity` by up to **±17%**, unbiased in
+sign (APLD 3.70 vs 3.15; FCEL 1.38 vs 1.64; CLSK 3.26 vs 3.25). The entire difference is the
+volume denominator: FINRA averages over its semi-monthly short cycle, we use `avg_volume_30d`,
+a trailing 30 completed sessions.
+
+**Owner decision: accepted as-is, no action.** What matters is internal consistency — the same
+computation gates entries, feeds `strategy_stats`, and drives the §6.4 holdout replay, so the
+`> 3` threshold is calibrated to our own metric. Substituting FINRA's published figure would make
+the gate disagree with the §3 eligibility guard, which uses the same `avg_volume_30d` column, and
+would silently recalibrate a threshold that was set against ours.
+
+**Recorded here so nobody later "corrects" it into an inconsistency.** If the two figures ever
+need reconciling, change the threshold and the replay together, not the denominator alone.
+
+### The Railway deploy is running a stale build — act on this before Wednesday
+
+Verified independently: of the 300 `features` rows written in the last 90 minutes, only **57**
+carry `days_to_cover` / `price_momentum_1d` / `price_momentum_2d`. Those 57 are the rows written
+by local runs at HEAD. The 5-minute ticks arriving from Railway write NULL into all three,
+because that deploy predates `111d9eb` and its `featureEngine` INSERT does not know the columns
+exist.
+
+**The database schema is migrated; the code writing to it is not.** Two consequences:
+
+- The §6.4 holdout replay reads mostly NULL for the three newest features, so seed-#2 and
+  seed-#4 lineages remain effectively unreplayable until the deploy catches up.
+- Railway's cron is writing to the same tables as local runs, which is the already-recorded
+  no-cron-overlap exposure showing up again — this time with a *version* difference rather than
+  just a duplicate.
+
+**Redeploy Railway from `main` before Wednesday's session**, or the live conviction lifecycle
+will be verified against a database half-populated by older code.
+
+### Resolved 2026-08-11 (fourth set)
+
+- **Seed #3 gained a time bound** — max hold 10 trading days, added as a third exit leg. Spec
+  §5.3 previously had no max hold, so a position whose social spike never arrived could be held
+  indefinitely. The rule is now uniform: no strategy in the system, hand-written or evolved, may
+  hold indefinitely — the seeds meet the same bar §6's exit-shape check imposes on Claude's
+  proposals. Stop and social-spike exit unchanged.
+- **The stale prompt string was corrected.** `CONDITION_SCHEMA`'s feature description claimed
+  "Every other feature is NULL until social data flows", which stopped being true at migration
+  006. Reworded to state factually which features carry live data and which are NULL, without
+  steering the model toward or away from any of them.
 
 ---
 

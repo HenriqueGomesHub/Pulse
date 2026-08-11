@@ -124,7 +124,7 @@ const CONDITION_SCHEMA = {
       type: 'string',
       enum: [...VOCABULARY.features],
       description:
-        'pnl_pct and hold_hours are only observable while a position is open and belong in exit blocks only. Every other feature is NULL until social data flows, and a NULL feature never satisfies a condition.',
+        'pnl_pct and hold_hours are only observable while a position is open and belong in exit blocks only. rel_volume_zscore, price_momentum, price_momentum_1d, price_momentum_2d and days_to_cover currently carry live data. mention_zscore, social_velocity, social_accel, author_quality, mentions_1h and unique_authors_1h are NULL until social data flows, as is exhaustion_score, which is derived from them, and a NULL feature never satisfies a condition.',
     },
     op: { type: 'string', enum: [...VOCABULARY.operators] },
     value: { type: 'number', description: 'Threshold. Percentages are whole numbers: -8 means -8%.' },
