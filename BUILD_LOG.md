@@ -172,24 +172,94 @@ would silently recalibrate a threshold that was set against ours.
 **Recorded here so nobody later "corrects" it into an inconsistency.** If the two figures ever
 need reconciling, change the threshold and the replay together, not the denominator alone.
 
-### The Railway deploy is running a stale build — act on this before Wednesday
+### Single-writer rule (owner decision, 2026-08-11)
 
-Verified independently: of the 300 `features` rows written in the last 90 minutes, only **57**
-carry `days_to_cover` / `price_momentum_1d` / `price_momentum_2d`. Those 57 are the rows written
-by local runs at HEAD. The 5-minute ticks arriving from Railway write NULL into all three,
-because that deploy predates `111d9eb` and its `featureEngine` INSERT does not know the columns
-exist.
+**Railway's cron is the sole routine writer to the production database.** Local runs happen only
+for explicit verification tasks, never as a background habit. This closes the duplicate-writer
+exposure that produced doubled `features` rows earlier in the build and, later, rows written by
+two different code versions at once.
 
-**The database schema is migrated; the code writing to it is not.** Two consequences:
+**Wednesday's lifecycle run executes LOCALLY, with Railway's service paused for the window.**
+Reasoning:
 
-- The §6.4 holdout replay reads mostly NULL for the three newest features, so seed-#2 and
-  seed-#4 lineages remain effectively unreplayable until the deploy catches up.
-- Railway's cron is writing to the same tables as local runs, which is the already-recorded
-  no-cron-overlap exposure showing up again — this time with a *version* difference rather than
-  just a duplicate.
+- The run needs the temporary-threshold edit to `seeds.js` and its restoration, both verified by
+  reading the `strategies` row back. Driving that through Railway would mean deploying a
+  deliberately weakened strategy to production and redeploying to restore it — two deploys, with
+  a window in which production carries thresholds that are not the spec's.
+- The run must be executed step by step with inspection between ticks (entry fills, conviction
+  written, exit submitted, exit settled). A 5-minute cron cannot be stepped.
+- Pausing Railway for the window makes the writer unambiguous rather than merely unlikely to
+  collide, which is the point of the rule.
 
-**Redeploy Railway from `main` before Wednesday's session**, or the live conviction lifecycle
-will be verified against a database half-populated by older code.
+Sequence: pause the Railway service → confirm no further cron ticks arrive → run the lifecycle
+locally → restore thresholds and verify against the `strategies` row → resume Railway. If the
+service cannot be paused, the fallback is to run the lifecycle inside a single tick window and
+accept one interleaved Railway tick, recorded as such — but pausing is preferred and is the plan.
+
+### Stale-build rows and the holdout replay — assessed, backfill proposed not performed
+
+Of the 860 `features` rows in the 30-day replay window, **803 carry NULL** in `days_to_cover`,
+`price_momentum_1d` and `price_momentum_2d` — written by the pre-`111d9eb` build. **260 of those
+fall inside the replay's 09:45–15:45 ET entry window**, so this is not the after-hours-only case
+first assumed.
+
+**Direction of the error: under-representation, not corruption.** A NULL never satisfies a
+condition, so a replayed strategy gating on any of the three simply takes no entry at those
+ticks. Nothing is scored wrongly; entries are missed. The consequence is that seed-#2 and
+seed-#4 lineages replay to few or zero trades, fall under the 10-trade minimum, and return NULL
+holdout expectancy — and **under swap semantics a NULL holdout means no swap can ever happen for
+that lineage.** The failure is silent and looks exactly like "no candidate was good enough".
+
+All 57 non-stale rows fall *outside* the entry window, so **at present zero in-window rows carry
+the three features**.
+
+**Backfill is computable and is proposed, not performed.** All three are derivable from data
+already stored, with no external call:
+
+- `price_momentum_1d` / `price_momentum_2d` — `market_snapshots.pct_change_1d` already exists for
+  the whole window; `pct_change_2d` exists only on rows written by current code, but both are
+  recomputable from the `price` series already in `market_snapshots` at the matching timestamps.
+- `days_to_cover` — `tickers.days_to_cover` is a single current value per symbol. Backfilling it
+  onto historical rows would stamp today's short interest onto past ticks, which is **exactly the
+  look-ahead the per-tick denormalisation exists to prevent**. FINRA's dataset does carry
+  historical settlement dates, so an honest backfill would need to join each row to the
+  settlement in force at its timestamp.
+
+Recommendation: **backfill the two momentum columns, leave `days_to_cover` NULL for historical
+rows.** The momentum values are genuine reconstructions of what was true at each tick. A
+`days_to_cover` backfill is only honest with a per-settlement-date join, which is more work than
+the current 30-day window justifies — and letting it stay NULL is the conservative error, since
+NULL blocks entries rather than inventing them. Awaiting the owner's decision.
+
+Note this self-heals: once the deploy is current, every new tick carries all three, and the
+30-day window rolls the stale rows out.
+
+### Railway is STILL serving a stale build after the redeploy — unresolved
+
+The owner redeployed from `main` at HEAD. **The redeploy has not taken effect**, verified across
+two consecutive Railway ticks 10 minutes apart:
+
+| tick (UTC) | rows | with `days_to_cover` |
+|---|---|---|
+| 23:35:03 | 20 | **0** |
+| 23:30:02 | 20 | **0** |
+| 23:25:40 *(local, at HEAD)* | 20 | 19 |
+
+At HEAD, `featureEngine` reads `tickers.days_to_cover` — which is populated for 19 of 20 symbols
+— and writes it into every row. Railway writes NULL, so it is running pre-`111d9eb` code. The
+database schema is migrated; the code writing to it is not.
+
+Ticks are arriving on schedule, so the service is up — an older container is still serving.
+
+**Leading hypothesis: the new build cannot boot.** `server/config.js` now lists
+`ANTHROPIC_API_KEY` in its required-env check and calls `process.exit(1)` when it is missing.
+If that variable is not set in Railway's environment, the new deployment dies at startup and
+Railway keeps the previous one live — which is exactly the observed symptom: healthy ticks,
+stale code. Check the deployment logs for the "Missing required environment variables" line
+before looking anywhere else.
+
+Until this resolves, Wednesday's lifecycle would be verified against a database half-populated
+by older code.
 
 ### Resolved 2026-08-11 (fourth set)
 
