@@ -78,14 +78,20 @@ with a real handle if Reddit access is ever restored.
 Owner decisions on the blocker list. Two are policy and take effect immediately; four
 require a change on disk that has not landed yet (see the status table below).
 
-| # | Decision | Status |
+| # | Decision | Status (re-verified 2026-08-11, second pass) |
 |---|---|---|
-| 1 | Use Railway public `DATABASE_URL` | **not on disk** — `.env` still resolves to `postgres.railway.internal` |
+| 1 | Use Railway public `DATABASE_URL` | **STILL NOT ON DISK** — `.env` byte-identical, 515 bytes, mtime Aug 10 21:51; host still `postgres.railway.internal` |
 | 2 | Keep dual-path Reddit; social verification DEFERRED to deployment | in effect |
 | 3 | Keep Stocktwits as written; verification DEFERRED to deployment | in effect |
-| 4 | Anthropic credit added | **not in effect** — API still returns "credit balance is too low" |
-| 5 | `quiet-precision.md` in repo root for phase 3 | **not on disk** — file not present |
-| 6 | `git remote add origin <url>` | **not configured** — no remote; the instruction still contained the literal placeholder |
+| 4 | Anthropic credit added | **STILL FAILING** — identical `400 invalid_request_error`, "credit balance is too low" |
+| 5 | `quiet-precision.md` in repo root for phase 3 | **STILL NOT ON DISK** — repo root holds only `BUILD_LOG.md`, `pulse-spec.md`, `package.json`, dotfiles |
+| 6 | `git remote add origin` + push | **DONE** — `origin` → `github.com/HenriqueGomesHub/Pulse.git`, `main` pushed, 3 commits |
+
+Items 1, 4 and 5 have now failed verification twice, with no change between passes. `.env`
+has not been written to since Aug 10 21:51. A filesystem check confirmed only one `Pulse`
+directory exists under `OneDrive\Documentos\Coding`, and no copy on Desktop, Downloads or
+Documents — so this is not an edit landing in a duplicate checkout. Something is preventing
+the edits from reaching disk (unsaved buffer, OneDrive sync, or a different machine).
 
 ### DEFERRED-TO-DEPLOYMENT — social_snapshots population
 
