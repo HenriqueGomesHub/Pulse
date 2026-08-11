@@ -9,6 +9,8 @@ export const SEEDS = [
           { feature: 'mention_zscore', op: 'gt', value: 3 },
           { feature: 'social_accel', op: 'gt', value: 0 },
           { feature: 'rel_volume_zscore', op: 'gt', value: 2 },
+          { feature: 'mentions_1h', op: 'gte', value: 5 },
+          { feature: 'unique_authors_1h', op: 'gte', value: 3 },
         ],
       },
       exit: {

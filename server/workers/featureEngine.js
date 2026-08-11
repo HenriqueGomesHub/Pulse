@@ -3,6 +3,7 @@ import { pool } from '../db/pool.js';
 const MIN_OBS_REL_VOLUME_30D = 20;
 const MIN_OBS_MENTIONS_7D = 20;
 const MIN_OBS_MENTIONS_24H = 12;
+const MENTION_SD_FLOOR = 1;
 
 const MARKET_SQL = `
   WITH recent AS (
@@ -70,11 +71,12 @@ function num(value) {
   return value === null || value === undefined ? null : Number(value);
 }
 
-function zscore(value, mean, sd, n, minObs) {
+function zscore(value, mean, sd, n, minObs, sdFloor = 0) {
   if (value === null || mean === null || sd === null) return null;
   if (n === null || n < minObs) return null;
-  if (sd === 0) return null;
-  return (value - mean) / sd;
+  const denominator = Math.max(sd, sdFloor);
+  if (denominator === 0) return null;
+  return (value - mean) / denominator;
 }
 
 function exhaustionScore(inputs) {
@@ -124,7 +126,7 @@ export async function featureEngine() {
       ? zscore(mentions, num(s.day_mean), num(s.day_sd), num(s.day_n), MIN_OBS_MENTIONS_24H)
       : null;
     const mentionZscore = s
-      ? zscore(mentions, num(s.week_mean), num(s.week_sd), num(s.week_n), MIN_OBS_MENTIONS_7D)
+      ? zscore(mentions, num(s.week_mean), num(s.week_sd), num(s.week_n), MIN_OBS_MENTIONS_7D, MENTION_SD_FLOOR)
       : null;
 
     const priorVelocity = previousVelocity.get(symbol) ?? null;
@@ -144,10 +146,10 @@ export async function featureEngine() {
       relVolumeZscore,
       priceMomentum,
       exhaustionScore({ socialAccel, priceMomentum, bullRatio, prevBullRatio, relVolume, prevRelVolume }),
+      mentions,
+      authors,
     ];
-    values.push(
-      `($${params.length + 1}, $${params.length + 2}, $${params.length + 3}, $${params.length + 4}, $${params.length + 5}, $${params.length + 6}, $${params.length + 7}, $${params.length + 8}, $${params.length + 9})`
-    );
+    values.push(`(${row.map((_, index) => `$${params.length + index + 1}`).join(', ')})`);
     params.push(...row);
   }
 
@@ -157,7 +159,7 @@ export async function featureEngine() {
   }
 
   await pool.query(
-    `INSERT INTO features (symbol, ts, social_velocity, social_accel, author_quality, mention_zscore, rel_volume_zscore, price_momentum, exhaustion_score)
+    `INSERT INTO features (symbol, ts, social_velocity, social_accel, author_quality, mention_zscore, rel_volume_zscore, price_momentum, exhaustion_score, mentions_1h, unique_authors_1h)
      VALUES ${values.join(', ')}`,
     params
   );

@@ -59,6 +59,8 @@ function featureBag(row, pnlPct, holdHours) {
     social_accel: num(row?.social_accel),
     author_quality: num(row?.author_quality),
     mention_zscore: num(row?.mention_zscore),
+    mentions_1h: num(row?.mentions_1h),
+    unique_authors_1h: num(row?.unique_authors_1h),
     rel_volume_zscore: num(row?.rel_volume_zscore),
     price_momentum: num(row?.price_momentum),
     exhaustion_score: num(row?.exhaustion_score),

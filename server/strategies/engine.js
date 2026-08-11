@@ -3,6 +3,8 @@ const FEATURES = new Set([
   'social_accel',
   'author_quality',
   'mention_zscore',
+  'mentions_1h',
+  'unique_authors_1h',
   'rel_volume_zscore',
   'price_momentum',
   'exhaustion_score',

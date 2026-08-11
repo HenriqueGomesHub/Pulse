@@ -72,6 +72,8 @@ function featureBag(row) {
     social_accel: row.social_accel === null ? null : Number(row.social_accel),
     author_quality: row.author_quality === null ? null : Number(row.author_quality),
     mention_zscore: row.mention_zscore === null ? null : Number(row.mention_zscore),
+    mentions_1h: row.mentions_1h === null ? null : Number(row.mentions_1h),
+    unique_authors_1h: row.unique_authors_1h === null ? null : Number(row.unique_authors_1h),
     rel_volume_zscore: row.rel_volume_zscore === null ? null : Number(row.rel_volume_zscore),
     price_momentum: row.price_momentum === null ? null : Number(row.price_momentum),
     exhaustion_score: row.exhaustion_score === null ? null : Number(row.exhaustion_score),

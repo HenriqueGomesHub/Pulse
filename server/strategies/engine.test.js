@@ -10,6 +10,8 @@ const NO_FEATURES = {
   social_accel: null,
   author_quality: null,
   mention_zscore: null,
+  mentions_1h: null,
+  unique_authors_1h: null,
   rel_volume_zscore: null,
   price_momentum: null,
   exhaustion_score: null,
@@ -21,6 +23,8 @@ const ENTRY_MET = {
   mention_zscore: 3.4,
   social_accel: 0.2,
   rel_volume_zscore: 2.5,
+  mentions_1h: 9,
+  unique_authors_1h: 6,
 };
 
 test('entry: all conditions met returns an entry signal listing every matched condition', () => {
@@ -28,7 +32,7 @@ test('entry: all conditions met returns an entry signal listing every matched co
   assert.equal(signal.direction, 'entry');
   assert.deepEqual(
     signal.conditions_met.map((condition) => condition.feature),
-    ['mention_zscore', 'social_accel', 'rel_volume_zscore']
+    ['mention_zscore', 'social_accel', 'rel_volume_zscore', 'mentions_1h', 'unique_authors_1h']
   );
 });
 

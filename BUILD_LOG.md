@@ -29,7 +29,31 @@ a genuine continuous distribution whose spread is comparable to its mean, unlike
 zero-inflated mention baseline. A 1.0 floor would crush every z-score toward zero and
 permanently disable `rel_volume_zscore > 2`, so it is left unfloored.
 
-Recorded in spec §4 and §5.1.
+Recorded in spec §4 and §5.1. **Implemented and verified 2026-08-11.**
+
+Migration `003_features_social_counts.sql` adds `features.mentions_1h` and
+`features.unique_authors_1h`; `featureEngine` populates them, both worker feature bags carry
+them, and `engine.js`'s vocabulary accepts them so the new conditions validate rather than
+throw. Spec §4 already named `unique_authors_1h` as a per-tick feature.
+
+NULL-vs-zero semantics: a social row reporting zero mentions writes `0` — that is data, the
+crowd was silent. Only the *absence* of any social row for that symbol writes NULL. This keeps
+the "insufficient data → NULL" rule intact without turning genuine silence into missing data.
+
+Floor effect against the real baseline (mean 0.000496, sd 0.0223):
+
+| mentions | z before | z after | clears `> 3`? |
+|---|---|---|---|
+| 1 | 44.8 | 1.00 | before yes → **after no** |
+| 3 | 134.5 | 3.00 | before yes → **after no** |
+| 5 | 224.2 | 5.00 | yes → yes |
+| 10 | 448.4 | 10.00 | yes → yes |
+
+Four mentions are now the minimum to clear `> 3`; with the substance gates the effective entry
+requires 5 mentions from 3 distinct authors. The single-mention trigger is closed.
+
+Verified: migration applied cleanly, `npm test` 19/19, live tick inserts 20 feature rows with
+both new columns NULL (correct — `social_snapshots` is still empty), zero signals.
 
 ### Seed #2 short-interest source — FINRA
 
