@@ -91,6 +91,8 @@ evolution_log  (id, ts, action ENUM(retire|mutate|promote), strategy_id, parent_
 - `price_momentum` — 1h and 1d pct change
 - `exhaustion_score` — the sell-signal core: high when social_accel < 0 while price still up, bull_ratio declining, rel_volume fading. This is the "it went up, now signal it's going down" mechanism.
 
+**Insufficient data → NULL** *(owner decision, 2026-08-11)*. Any feature computed from fewer observations than its window requires is written as NULL — never 0, never a partial value. Absent social history is the same case, not a special one: with no `social_snapshots` rows for a ticker, `social_velocity`, `social_accel`, `mention_zscore` and `author_quality` are all NULL. Strategies must treat NULL as "condition not met" rather than as a numeric comparison.
+
 ## 5. Generation-0 strategies (seeds.js)
 
 Each strategy = JSONB params interpreted by the same pure `engine.js` — evolution mutates params, never code.
@@ -126,6 +128,8 @@ Design: Quiet Precision v2.1 system doc applies.
 
 1. **Phase 1 — skeleton + data in:** repo, migrations, alpaca.js + marketIngest, reddit/stocktwits ingest, tickerExtractor. Verify: rows landing in social_snapshots + market_snapshots for a hardcoded 20-ticker watchlist.
 2. **Phase 2 — features + one dumb strategy:** featureEngine, engine.js, seed strategy #1 only, strategyRunner + positionTracker placing Alpaca paper orders. Verify: a full signal→order→tracked-trade→closed-trade lifecycle in the DB.
+
+   *Temporary-threshold method (owner decision, 2026-08-11).* When the lifecycle cannot be triggered by real conditions — e.g. social data is unavailable, so strategy #1 never fires — temporarily lower strategy #1's entry thresholds so a signal fires on market data alone, run the full signal → order → tracked → forced-exit → closed lifecycle against Alpaca during market hours, then restore the real thresholds and record the restoration in `BUILD_LOG.md`. The restoration is part of the phase gate, not an afterthought.
 3. **Phase 3 — dashboard:** all 5 pages against real DB data.
 4. **Phase 4 — full strategy set + stats:** seeds 2–4, statsRollup, Claude reasoning per signal.
 5. **Phase 5 — evolution:** weekly worker + holdout replay + evolution_log + Evolution page.
