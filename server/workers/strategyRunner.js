@@ -1,9 +1,13 @@
-import { MAX_DAY_TRADES_PER_5_SESSIONS } from '../config.js';
+import { MAX_CONVICTION_CALLS_PER_DAY, MAX_DAY_TRADES_PER_5_SESSIONS } from '../config.js';
 import { pool } from '../db/pool.js';
 import { getClock, getLatestTradePrice, submitOrder } from '../services/alpaca.js';
+import { callClaude } from '../services/claude.js';
 import { evaluate } from '../strategies/engine.js';
 
 const NOTIONAL_USD = 1000;
+const CONVICTION_MODEL = 'claude-haiku-4-5';
+const CONVICTION_MAX_TOKENS = 300;
+const MIN_CONVICTION = 0.4;
 const MAX_OPEN_TRADES_PER_STRATEGY = 5;
 const ENTRY_WINDOW_OPEN_MINUTES = 9 * 60 + 45;
 const ENTRY_WINDOW_CLOSE_BUFFER_MS = 15 * 60 * 1000;
@@ -25,6 +29,31 @@ const ELIGIBLE_SQL = `
   WHERE l.price >= $1 AND l.price <= $2
     AND t.avg_volume_30d > $3
     AND t.exchange = ANY($4::text[])
+`;
+
+const CONVICTION_SCHEMA = {
+  type: 'object',
+  properties: {
+    conviction: {
+      type: 'number',
+      description:
+        'Confidence from 0 to 1 that this entry signal will be a profitable trade for this strategy. 0 is no confidence, 1 is full confidence.',
+    },
+    reasoning: {
+      type: 'string',
+      description: '2-3 sentences explaining the conviction score, citing the feature values that drove it.',
+    },
+  },
+  required: ['conviction', 'reasoning'],
+  additionalProperties: false,
+};
+
+const RESERVE_CONVICTION_CALL_SQL = `
+  INSERT INTO claude_call_budget (day, calls)
+  VALUES ((now() AT TIME ZONE 'America/New_York')::date, 1)
+  ON CONFLICT (day) DO UPDATE SET calls = claude_call_budget.calls + 1
+    WHERE claude_call_budget.calls < $1
+  RETURNING calls
 `;
 
 const DAY_TRADES_SQL = `
@@ -78,6 +107,31 @@ function featureBag(row) {
     price_momentum: row.price_momentum === null ? null : Number(row.price_momentum),
     exhaustion_score: row.exhaustion_score === null ? null : Number(row.exhaustion_score),
   };
+}
+
+async function convictionFor(strategyName, bag) {
+  const reserved = await pool.query(RESERVE_CONVICTION_CALL_SQL, [MAX_CONVICTION_CALLS_PER_DAY]);
+  if (reserved.rowCount === 0) {
+    console.warn(
+      `[strategyRunner] daily budget of ${MAX_CONVICTION_CALLS_PER_DAY} conviction calls is spent, no conviction and no trade`
+    );
+    return { conviction: null, reasoning: null, budgetExceeded: true };
+  }
+
+  const verdict = await callClaude(
+    `Strategy: ${strategyName}\nfeature_snapshot: ${JSON.stringify(bag)}`,
+    CONVICTION_SCHEMA,
+    { model: CONVICTION_MODEL, maxTokens: CONVICTION_MAX_TOKENS }
+  );
+
+  const conviction = Number(verdict?.conviction);
+  if (!Number.isFinite(conviction) || conviction < 0 || conviction > 1) {
+    console.warn(
+      `[strategyRunner] ${strategyName}: Claude returned no usable conviction (call ${reserved.rows[0].calls} of ${MAX_CONVICTION_CALLS_PER_DAY} today), the trade is not gated on it`
+    );
+    return { conviction: null, reasoning: null, budgetExceeded: false };
+  }
+  return { conviction, reasoning: verdict.reasoning, budgetExceeded: false };
 }
 
 export async function strategyRunner() {
@@ -152,15 +206,31 @@ export async function strategyRunner() {
       const qty = Math.floor(NOTIONAL_USD / lastPrice);
       if (qty < 1) continue;
 
-      const reasoning = signal.conditions_met
+      const conditions = signal.conditions_met
         .map((condition) => `${condition.feature} ${condition.op} ${condition.value}`)
         .join(' AND ');
 
+      const verdict = await convictionFor(strategy.name, bag);
+
       const inserted = await pool.query(
-        `INSERT INTO signals (strategy_id, symbol, ts, direction, reasoning, feature_snapshot)
-         VALUES ($1, $2, $3, 'entry', $4, $5) RETURNING id`,
-        [strategy.id, symbol, ts, reasoning, bag]
+        `INSERT INTO signals (strategy_id, symbol, ts, direction, conviction, reasoning, feature_snapshot)
+         VALUES ($1, $2, $3, 'entry', $4, $5, $6) RETURNING id`,
+        [strategy.id, symbol, ts, verdict.conviction, verdict.reasoning ?? conditions, bag]
       );
+
+      if (verdict.budgetExceeded) {
+        console.warn(
+          `[strategyRunner] ${strategy.name} ${symbol}: signal ${inserted.rows[0].id} logged with conviction NULL, trade skipped (${conditions})`
+        );
+        continue;
+      }
+
+      if (verdict.conviction !== null && verdict.conviction < MIN_CONVICTION) {
+        console.log(
+          `[strategyRunner] ${strategy.name} ${symbol}: signal ${inserted.rows[0].id} logged, conviction ${verdict.conviction} below ${MIN_CONVICTION}, trade skipped (${conditions})`
+        );
+        continue;
+      }
 
       const trade = await pool.query(
         `INSERT INTO trades (strategy_id, symbol, entry_signal_id, qty, entry_ts, status)
@@ -177,7 +247,7 @@ export async function strategyRunner() {
       dayTradeBudget -= 1;
       placed += 1;
       console.log(
-        `[strategyRunner] ${strategy.name} entry ${side} ${qty} ${symbol} @ ~${lastPrice} = $${(qty * lastPrice).toFixed(2)} (${reasoning})`
+        `[strategyRunner] ${strategy.name} entry ${side} ${qty} ${symbol} @ ~${lastPrice} = $${(qty * lastPrice).toFixed(2)} (${conditions}, conviction ${verdict.conviction})`
       );
     }
 

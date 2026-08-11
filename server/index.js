@@ -8,6 +8,7 @@ import { marketIngest } from './workers/marketIngest.js';
 import { positionTracker } from './workers/positionTracker.js';
 import { redditIngest } from './workers/redditIngest.js';
 import { stocktwitsIngest } from './workers/stocktwitsIngest.js';
+import { statsRollup } from './workers/statsRollup.js';
 import { strategyRunner } from './workers/strategyRunner.js';
 import { tickerMetaRefresh } from './workers/tickerMetaRefresh.js';
 import { SEEDS } from './strategies/seeds.js';
@@ -46,9 +47,9 @@ async function runPipeline(forceMarket) {
     );
     await pool.query(
       `INSERT INTO strategies (name, generation, params, status)
-       SELECT $1, $2, $3, 'active'
+       SELECT $1, $2, $3, $4::strategy_status
        WHERE NOT EXISTS (SELECT 1 FROM strategies WHERE name = $1 AND generation = $2)`,
-      [seed.name, seed.generation, seed.params]
+      [seed.name, seed.generation, seed.params, seed.status]
     );
   }
 
@@ -66,11 +67,25 @@ async function runPipeline(forceMarket) {
   console.log(`[pipeline] tick finished in ${Date.now() - startedAt}ms`);
 }
 
+async function warnInactiveSeeds() {
+  const { rows } = await pool.query(
+    "SELECT name, status FROM strategies WHERE generation = 0 AND status <> 'active' ORDER BY id"
+  );
+  for (const row of rows) {
+    console.warn(
+      `[pulse] generation-0 strategy "${row.name}" is status=${row.status}; strategyRunner will not evaluate it`
+    );
+  }
+}
+
 if (process.argv[2] === 'tick') {
   await runPipeline(true);
   await pool.end();
 } else if (process.argv[2] === 'meta') {
   await tickerMetaRefresh();
+  await pool.end();
+} else if (process.argv[2] === 'stats') {
+  await statsRollup();
   await pool.end();
 } else {
   const app = express();
@@ -93,7 +108,17 @@ if (process.argv[2] === 'tick') {
     { timezone: 'America/New_York' }
   );
 
+  cron.schedule(
+    '0 * * * *',
+    () => {
+      statsRollup().catch((err) => console.error('[statsRollup] run failed', err));
+    },
+    { timezone: 'America/New_York' }
+  );
+
+  await warnInactiveSeeds();
+
   app.listen(PORT, () =>
-    console.log(`[pulse] listening on ${PORT}, cron registered for */5 * * * * and 0 6 * * *`)
+    console.log(`[pulse] listening on ${PORT}, cron registered for */5 * * * *, 0 * * * * and 0 6 * * *`)
   );
 }

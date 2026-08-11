@@ -8,7 +8,7 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 | 1 — skeleton + data in | **PASSED** (amended gate) | 2026-08-11 |
 | 2 — features + one dumb strategy | **PASSED** | 2026-08-11 |
 | 3 — dashboard | **PASSED** | 2026-08-11 |
-| 4 — full strategy set + stats | not started | — |
+| 4 — full strategy set + stats | **built; gate PARTIAL** — live conviction lifecycle deferred to next open | 2026-08-11 |
 | 5 — evolution | not started | — |
 
 ---
@@ -72,6 +72,135 @@ Recorded in spec §5.2.
 ### Anthropic billing — RESOLVED
 
 Retested: 1-token `claude-haiku-4-5` call returns **200 OK**. No phase 4 halt on this.
+
+---
+
+## Phase 4 — BUILT, GATE PARTIAL 2026-08-11
+
+Seeds 2–4, `statsRollup`, and the Claude conviction path are implemented and verified against
+the live database. **The gate does not pass yet**: the live conviction lifecycle — a real entry
+signal triggering a real Claude call and a real order carrying its conviction — could not run
+because the market closed at 16:00 ET. **DEFERRED to the next open (2026-08-12 09:30 ET) and
+must be completed before any phase 5 work**, per the market-hours exception.
+
+### Seeds — `strategies` after sync
+
+| id | name | status | side |
+|---|---|---|---|
+| 1 | social-breakout | active | long |
+| 2 | squeeze-setup | **candidate** | long |
+| 3 | quiet-accumulation | active | long |
+| 4 | fade-the-peak | **candidate** | short |
+
+Status is written once at insert and never re-asserted by the tick sync — otherwise phase 5
+retiring a gen-0 seed would be silently undone within 5 minutes. The DB row is authoritative
+once it exists; `seeds.js` supplies only the birth value. `index.js` logs a warning at boot for
+every gen-0 seed that is not `active`, per the owner rule in spec §5.2.
+
+### Two seeds cannot be expressed as the spec writes them
+
+This is a genuine spec gap, not an implementation shortfall, and it needs an owner decision.
+
+**Seed #2 (`squeeze-setup`) loses 2 of its 3 entry conditions.**
+- `short_interest_pct > 15` — not a feature at all. It is a `tickers` column, NULL for all 20
+  rows, absent from `features`, and absent from `engine.js`'s vocabulary. Blocked on FINRA.
+- `price_momentum_1d > 3%` — deferred **M9**: `featureEngine` writes only `pct_change_1h` into
+  `features.price_momentum` and discards `pct_change_1d`.
+
+What survives is `mention_zscore > 2` alone, which is not seed #2. It is `candidate`, so it
+never runs — exactly what the §5.2 rule is for.
+
+**Seed #4 (`fade-the-peak`) loses 1 of its 2 entry conditions.** `price up > 30% in 2 days`
+needs a two-day price change. **Spec §4 defines no such feature** — it lists `price_momentum`
+as "1h and 1d", so even fixing M9 in full would not express seed #4. Adding a 2-day window is
+a spec change, not a bug fix.
+
+**Deviation flagged for ratification:** seed #4 was shipped `candidate`, not `active` as
+instructed. What survives of its entry is `exhaustion_score > 0.9` alone — which would short
+*any* maximally-exhausted ticker with no requirement that it ran up first. That is a strictly
+looser strategy than §5.4, it fires nothing today (exhaustion is NULL), and it would start
+shorting the moment social data flows on Railway from a gate never exercised end to end. One
+word in `seeds.js` reverts it.
+
+**Seed #3 has no time bound.** Spec §5.3 gives it only a spike exit and a −6% stop — no target,
+no max hold. Implemented literally rather than inventing a cap. A winner that never sees a
+social spike holds indefinitely. Seed #3's entry *is* fully expressible, so it will be the
+first seed to trade once social data flows.
+
+### Short-side support — audited, three real gaps
+
+Arithmetic and order plumbing are complete: `strategyRunner` maps `side: 'short'` → `sell`,
+`positionTracker` handles `isShort` in all four places that matter (peak tracking, both PnL
+computations, exit side), and the Alpaca account has `shorting_enabled: true`. But:
+
+1. **No borrow check anywhere.** `tickers` has no `shortable` / `easy_to_borrow` column and
+   `tickerMetaRefresh` discards those fields from `getAsset`. The watchlist is all small caps,
+   which are routinely hard to borrow.
+2. **A rejected short sell breaks the tick.** `submitOrder` throws, the runner's loop does not
+   catch, so `positionTracker` never runs and every strategy's exits defer 5 minutes. It
+   self-heals next tick but costs a cycle.
+3. **The short path has never executed against the live broker.**
+
+A second, independent reason not to ship seed #4 active.
+
+### `statsRollup`
+
+Hourly cron (`0 * * * *` ET), separate from the 5-minute pipeline, runnable as `npm run stats`.
+One upsert; every strategy gets a row for every window, so 12 rows for 4 strategies. Verified
+idempotent (ran twice, still 12 rows).
+
+- **`max_drawdown` is peak-to-trough on the cumulative PnL curve within the window**, matching
+  the owner decision and `/api/pnl` — verified equal at `0.2033829598810066`.
+- **Expectancy** reproduces the hand-checked `−0.06779431996033554`. `avg_loss_pct` is stored
+  signed negative, so §9's `(win% × avgWin) − (loss% × avgLoss)` becomes
+  `win% × avg_win_pct + loss% × avg_loss_pct`; the minus cancels against the sign convention.
+- **`sharpe_naive` is undefined in the spec.** Chosen definition: mean per-trade `pnl_pct`
+  divided by its sample standard deviation over closed trades in the window; risk-free 0, no
+  annualisation, one observation per trade. It is a per-trade information ratio, **not** a
+  time-series Sharpe — not comparable across strategies with different holding periods and must
+  not be annualised downstream. NULL when `trades_n < 2` or variance is zero.
+- Insufficient-data discipline holds: `trades_n = 0` → row exists, count 0, everything else
+  NULL. `win_rate = 0` with no wins is real data; `avg_win_pct` is NULL because there are none.
+
+### Claude conviction path — all cost rules implemented
+
+`services/claude.js` — `callClaude(prompt, schema, { model, maxTokens })`, no default model.
+Reliable JSON comes from the API's structured outputs (`output_config.format.json_schema`), so
+prose-wrapped JSON is not a shape the model can emit; this also keeps the user message literally
+just the `feature_snapshot` and strategy name. One retry, then `null` with a loud warning.
+`callClaude` never throws, so a Claude outage cannot fail a tick.
+
+Call placement in `strategyRunner`: after sizing, before the trade row —
+`entry window → PDT → eligibility → open cap → duplicate check → evaluate → price → qty ≥ 1 →
+conviction → INSERT signals → skip checks → INSERT trades → submitOrder`. A skipped trade
+writes a `signals` row and nothing else, so no orphan `trades` row occupies an open slot. All
+phase-2 guards verified unchanged.
+
+**Exits make no Claude call** — verified statically (`positionTracker.js` contains zero
+references to Claude or Anthropic) and dynamically (a live `positionTracker` run made 0 requests
+to `api.anthropic.com`). Stop, target, max-hold and the exhaustion exit are all pure numeric.
+
+**Daily budget** — migration `005` adds `claude_call_budget(day, calls)`, one row per ET session
+date, reserved with a single atomic conditional upsert *before* each call. At the cap the
+`WHERE` fails and `rowCount = 0` is the refusal. Restart-safe by construction (a DB row, not
+process state) and concurrency-safe across two backend instances, which BUILD_LOG records as
+having actually happened.
+
+**Two different NULLs, two different outcomes** — the distinction that matters:
+- **budget exceeded** → conviction NULL, **trade skipped**. No judgement exists and the cap must
+  actually cap spending.
+- **parse failure or outage** → conviction NULL, **trade proceeds ungated**. The rule gates only
+  when a conviction exists; an outage must not become a silent trading halt.
+- **conviction present and < 0.4** → signal logged, trade skipped — the counterfactual dataset.
+
+Real call verified end to end: 305 in / 103 out tokens, conviction `0.73` parsed cleanly.
+About $0.0009 per call, so the 50-call cap is roughly **$0.045/day** worst case. Parse-failure
+retry, outage, budget-exceeded and restart-safety were each demonstrated deliberately.
+
+### Action required before the next deploy
+
+`config.js` now requires `ANTHROPIC_API_KEY` at boot. **Confirm it is set in Railway's
+variables or the app will `process.exit(1)` on start.**
 
 ---
 

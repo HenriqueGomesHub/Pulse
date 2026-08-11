@@ -6,6 +6,7 @@ const REQUIRED = [
   'ALPACA_SECRET',
   'ALPACA_BASE_URL',
   'ALPACA_DATA_URL',
+  'ANTHROPIC_API_KEY',
 ];
 
 const missing = REQUIRED.filter((name) => !process.env[name]);
@@ -43,5 +44,7 @@ export const WATCHLIST = [
 export const SUBREDDITS = ['wallstreetbets', 'pennystocks', 'Shortsqueeze'];
 
 export const MAX_DAY_TRADES_PER_5_SESSIONS = 3;
+
+export const MAX_CONVICTION_CALLS_PER_DAY = 50;
 
 export const PORT = Number(process.env.PORT) || 3000;
