@@ -75,6 +75,118 @@ Retested: 1-token `claude-haiku-4-5` call returns **200 OK**. No phase 4 halt on
 
 ---
 
+## BRIDGE SOCIAL SOURCE (ApeWisdom) — PROPOSAL, awaiting ratification before implementation
+
+The task's item 4 gates the rest, and the answer is not obvious. Worse, investigating the API
+surfaced a second gating problem the task did not anticipate. Both need an owner decision.
+
+### What ApeWisdom actually returns — verified against a live response
+
+`GET https://apewisdom.io/api/v1.0/filter/all-stocks/page/{n}` — keyless, no auth, HTTP 200.
+944 tickers over 10 pages, 100 per page. Fields per ticker, verbatim:
+
+```json
+{ "rank": 1, "ticker": "HTZ", "name": "Hertz",
+  "mentions": 692, "upvotes": 1792,
+  "rank_24h_ago": 2, "mentions_24h_ago": 353 }
+```
+
+**17 of our 20 tickers are present**, spread across pages 1, 2, 5, 8 and 9 — so full coverage
+costs 9–10 requests per cycle, not one. BITF, FCEL and EOSE are absent, which means below the
+ranking cutoff, i.e. **zero mentions — real data, not missing data**.
+
+Live watchlist sample: RKLB 110, ASTS 60, RIOT 23, PLUG 13, SOFI 9, WULF 7, APLD 5, IONQ 5.
+
+### Cadence — measured, not assumed
+
+The docs state no refresh interval, so it was sampled directly every 5 minutes:
+
+```
+t0    01:36:54Z   RKLB 110  ASTS 60  RIOT 23  PLUG 13  SOFI 9  WULF 7  APLD 5  IONQ 5
++5m   01:41:55Z   changed: RKLB 110->109, RIOT 23->22, IONQ 5->6
++10m  01:46:55Z   changed: RKLB 109->108
+```
+
+**The data updates at least every 5 minutes**, so it is no slower than our tick and the task's
+"fetch on their cadence, skip when unchanged" concern is milder than expected. A per-ticker
+dedup against the last stored `raw` is still worth keeping — most tickers are unchanged between
+ticks, and inserting identical rows would inflate the z-score baseline with duplicate
+observations that carry no new information.
+
+Note the direction of travel: RKLB fell 110 → 109 → 108. Counts *decrease* as old mentions age
+out of the trailing window — which is itself confirmation that the window is rolling, and is a
+behaviour no 1-hour counter of ours has ever exhibited.
+
+### GATING PROBLEM 1 — the window is 24 hours, not 1 hour
+
+`mentions` is a **rolling 24-hour count** (confirmed by the presence of `mentions_24h_ago`, its
+24-hours-ago counterpart). Our column is `mentions_1h`, and every downstream consumer assumes a
+one-hour window.
+
+This is not a labelling nit. **Seed #1 gates on `mentions_1h >= 5` and `unique_authors_1h >= 3`** —
+absolute thresholds added specifically to stop single-post triggers. "5 mentions in 24 hours" is
+a far weaker bar than "5 mentions in 1 hour": on today's data 8 of 17 tickers clear it right now,
+in a quiet overnight tape. Writing a 24h count into `mentions_1h` would silently loosen the gate
+the H4 decision existed to tighten.
+
+Differencing consecutive snapshots does not recover an hourly count either: sampling a rolling
+24h window an hour apart yields *(mentions this hour) − (mentions in the hour 24h ago)*, which
+can go negative and is not a mention count at all.
+
+Options: **(a)** store the 24h count as-is and accept that seed #1's absolute gates mean
+something different under this source; **(b)** recalibrate seed #1's absolute thresholds per
+source; **(c)** add a window-scoped column so the two are never confused. None is free.
+
+### GATING PROBLEM 2 — how multiple mention sources combine (task item 4)
+
+`featureEngine`'s `SOCIAL_SQL` currently does `sum(mentions_1h) … GROUP BY symbol, ts` and then
+takes the newest row. Deferred finding **H1** already records that this never actually merges
+sources, because each ingest stamps its own `new Date()` and they never share a `ts` — so the
+newest writer silently wins. Adding a third source makes that worse *and* raises real
+double-counting, because **ApeWisdom is itself aggregated Reddit**: summing it with
+Reddit-direct counts the same posts twice.
+
+**Proposed rule — one primary mention source, never blended:**
+
+- Mention-derived features (`mentions_1h`, `unique_authors_1h`, `mention_zscore`,
+  `social_velocity`, `social_accel`, `author_quality`) come from **exactly one source**, chosen
+  by fixed precedence: **`reddit` > `apewisdom`**. Reddit-direct is the ground truth; ApeWisdom
+  is a proxy for the same population and yields to it the moment OAuth lands.
+- **Stocktwits is excluded from mention counts entirely.** It is a different platform with a
+  different volume scale; blending it into the same count makes the z-score baseline a mixture
+  whose meaning changes with source availability.
+- **`bull_ratio` continues to come from Stocktwits only** — it is the only source with sentiment.
+- Precedence is applied **across the whole baseline window, not per tick**. A z-score is only
+  meaningful if its 7-day baseline is measured on one instrument; switching sources mid-window
+  compares a count to a history of differently-scaled counts.
+
+That rule also closes H1 for mentions as a side effect.
+
+**Consequence to accept up front:** when Reddit-direct arrives, the primary source changes and
+every mention baseline restarts from scratch — 7 days of ApeWisdom history does not transfer to
+Reddit-direct, because the two measure the same thing on different scales and windows.
+
+### Proposed sequencing — ingest now, consume after ratification
+
+The 7-day baseline is the long pole, so I propose **starting ingestion immediately** while
+`featureEngine` explicitly ignores `source = 'apewisdom'` until the two decisions above are
+made. Rows accumulate and the baseline clock starts now; features are untouched and cannot be
+corrupted in the meantime. Without that guard, apewisdom rows would immediately start winning
+the `rn = 1` race at random and swing the mention scale tick to tick.
+
+### Timeline for seed #1, once ratified
+
+`mention_zscore` needs `MIN_OBS_MENTIONS_7D = 20` observations, and the deferred finding **M5**
+already records that 20 observations is ~100 minutes rather than a real 7-day baseline. So a
+non-NULL `mention_zscore` appears **~100 minutes after the first apewisdom row**, but it will be
+a z-score against a near-degenerate sample until roughly **7 days** of history exists. Seed #1
+cannot fire before the first of those, and should not be trusted before the second.
+
+**Nothing is implemented yet.** Awaiting a decision on the window handling and the precedence
+rule.
+
+---
+
 ## Owner decisions 2026-08-11 (third set) — implemented
 
 ### 1. Seed #2's gate is now days-to-cover, on real FINRA data
