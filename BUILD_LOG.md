@@ -350,6 +350,43 @@ interfaces by default. No `.railwayignore` was added — excluding `web/` at the
 break a future frontend service deployed from the same repo, and `watchPatterns` already covers
 the redeploy concern.
 
+### DEPLOYMENT COMPLETE — verified 2026-08-12 00:55 UTC
+
+A backend service now exists on Railway, built from `main` at the `railway.json` commit.
+Healthcheck passed, status Active. Boot line:
+
+```
+[pulse] listening on 8080, cron registered for */5 * * * *, 0 * * * *, 0 6 * * * and 0 3 * * 0
+```
+
+All four schedules registered — 5-minute pipeline, hourly `statsRollup`, daily 06:00 ET
+`tickerMetaRefresh`, weekly Sunday 03:00 ET `evolution`. `PORT` 8080 is Railway's injection,
+picked up correctly.
+
+**Database-side verification.** The stale writer was killed at 00:30; the `00:35`, `00:40`,
+`00:45` and `00:50` windows all passed with nothing written, so the database had **no writer at
+all** before the service came up. The first tick from the real service landed at
+**00:55:01.451Z**, 20 rows, with all three migration-006 columns populated for **19 of 20**:
+
+| symbol | days_to_cover | price_momentum_1d | price_momentum_2d | price_momentum (1h) |
+|---|---|---|---|---|
+| APLD | 3.695 | 2.168 | 1.608 | 0.422 |
+| ASTS | 3.536 | 4.174 | −0.431 | 0.043 |
+| BBAI | 5.624 | 3.096 | 1.835 | 0.000 |
+| **BITF** | null | null | null | null |
+| CLSK | 3.260 | −0.604 | −6.341 | −0.171 |
+
+The single NULL is BITF, delisted, which is correct and expected. Values are real, not merely
+non-NULL — they match the figures `tickerMetaRefresh` and `marketIngest` produced locally.
+
+`schema_migrations` shows 001–006 applied, so `preDeployCommand` ran cleanly (all were already
+applied, and the runner skipped them idempotently as designed).
+
+**The single-writer rule now genuinely holds.** Railway is the only routine writer; the
+production database has exactly one process talking to it. Local runs happen only inside
+supervised verification windows with the service paused — which is the shape of Wednesday's
+lifecycle run.
+
 ### Resolved 2026-08-11 (fourth set)
 
 - **Seed #3 gained a time bound** — max hold 10 trading days, added as a third exit leg. Spec
