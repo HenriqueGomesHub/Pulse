@@ -272,10 +272,38 @@ NULL blocks entries rather than inventing them. Awaiting the owner's decision.
 Note this self-heals: once the deploy is current, every new tick carries all three, and the
 30-day window rolls the stale rows out.
 
-### Railway is STILL serving a stale build after the redeploy — unresolved
+### ROOT CAUSE — there was never a backend on Railway
+
+**The "Railway cron" did not exist.** The Railway project contained only Postgres. Every tick
+attributed to it was a **stale local `node server/index.js` process on the owner's machine**,
+running pre-`111d9eb` code, writing to the production database over the public Postgres URL.
+Both "redeploys" restarted the Postgres service, which is why neither changed the behaviour.
+
+Confirmed from both sides: the owner hit `EADDRINUSE` on :3000 starting a second copy and found
+the PID via `netstat`; from this side, `Get-CimInstance Win32_Process` found **PID 2444,
+`node server/index.js`, started 19:31:37 local, holding the listener on :3000**. It survived an
+earlier kill attempt. Killing it stopped the ticks.
+
+**This is where the diagnosis went wrong, and it is worth recording.** The evidence — on-time
+5-minute ticks writing NULL into columns that current code populates — was read as "Railway is
+serving a stale build". It was equally consistent with "something else is running stale code",
+and that alternative was never tested, because the existence of a deployed backend was assumed
+rather than checked. A single question — *is there actually a backend service in the Railway
+project?* — would have settled it in one step. Two "redeploys" and roughly an hour were spent
+on a hypothesis that had never been grounded.
+
+The irony worth noting: an earlier entry in this log already recorded a subagent's stray backend
+surviving its first kill and firing an unattended cron tick. That was the same failure mode,
+already observed, and it was not connected to this.
+
+The original (incorrect) diagnosis follows, retained deliberately rather than deleted:
+
+---
+
+### ~~Railway is STILL serving a stale build after the redeploy~~ — SUPERSEDED, see root cause above
 
 The owner redeployed from `main` at HEAD. **The redeploy has not taken effect**, verified across
-two consecutive Railway ticks 10 minutes apart:
+two consecutive ticks 10 minutes apart:
 
 | tick (UTC) | rows | with `days_to_cover` |
 |---|---|---|
@@ -294,15 +322,33 @@ Ticks are arriving on schedule, so the service is up — an older container is s
 interval throughout, so this is a single stale instance, not a new deployment running alongside
 an old one (that would produce two ticks per interval, one of each kind).
 
-**Leading hypothesis: the new build cannot boot.** `server/config.js` now lists
-`ANTHROPIC_API_KEY` in its required-env check and calls `process.exit(1)` when it is missing.
-If that variable is not set in Railway's environment, the new deployment dies at startup and
-Railway keeps the previous one live — which is exactly the observed symptom: healthy ticks,
-stale code. Check the deployment logs for the "Missing required environment variables" line
-before looking anywhere else.
+~~Leading hypothesis: the new build cannot boot on a missing `ANTHROPIC_API_KEY`.~~ Wrong — there
+was no build. The variable check was a red herring built on the unexamined premise that a
+backend service existed at all.
 
-Until this resolves, Wednesday's lifecycle would be verified against a database half-populated
-by older code.
+---
+
+### Deploy configuration added
+
+`railway.json` at the repo root, for a backend service built from `main`:
+
+- **Nixpacks** builds from the repo root, where `package.json` *is* the backend — four
+  dependencies, no devDependencies, `package-lock.json` committed, `engines.node >= 20`.
+  `web/` has its own `package.json` and is not recursed into.
+- **`preDeployCommand: npm run migrate`** applies migrations before the new container takes
+  traffic, so schema and code never diverge the way they did here. The runner is idempotent —
+  applied migrations are skipped.
+- **`startCommand: npm start`** → `node server/index.js`, which registers all four crons.
+- **`healthcheckPath: /health`**, so a container that cannot boot fails the deploy visibly
+  instead of being assumed healthy.
+- **`watchPatterns`** limited to `server/**`, `package.json`, `package-lock.json` and
+  `railway.json`, so frontend-only commits do not redeploy the backend.
+- `restartPolicyType: ON_FAILURE` with 3 retries.
+
+`PORT` is injected by Railway and read by `config.js` with a 3000 fallback; Express binds all
+interfaces by default. No `.railwayignore` was added — excluding `web/` at the repo root would
+break a future frontend service deployed from the same repo, and `watchPatterns` already covers
+the redeploy concern.
 
 ### Resolved 2026-08-11 (fourth set)
 
