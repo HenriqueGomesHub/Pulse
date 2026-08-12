@@ -1,13 +1,7 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
-    "builder": "NIXPACKS",
-    "watchPatterns": [
-      "server/**",
-      "package.json",
-      "package-lock.json",
-      "railway.json"
-    ]
+    "builder": "NIXPACKS"
   },
   "deploy": {
     "preDeployCommand": "npm run migrate",
