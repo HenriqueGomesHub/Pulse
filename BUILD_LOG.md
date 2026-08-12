@@ -75,7 +75,60 @@ Retested: 1-token `claude-haiku-4-5` call returns **200 OK**. No phase 4 halt on
 
 ---
 
-## BRIDGE SOCIAL SOURCE (ApeWisdom) — PROPOSAL, awaiting ratification before implementation
+## BRIDGE SOCIAL SOURCE (ApeWisdom) — GATE PASSED 2026-08-12 04:10 UTC
+
+Running in production on Railway. First tick from the deployed service:
+
+```
+04:10:00.977   apewisdom ingest   20 rows, 222 mentions total
+04:10:03.137   featureEngine      20 rows, mentions_24h on 20, mention_growth_24h on 17
+```
+
+Ingest before `featureEngine`, both on Railway's 5-minute boundary — the pipeline order holding
+in production, not just locally.
+
+**Real mention counts, not merely non-NULL:**
+
+| symbol | mentions_24h | upvotes_24h | mentions_1h | mentions_24h_ago |
+|---|---|---|---|---|
+| RKLB | 100 | 288 | **null** | 340 |
+| ASTS | 53 | 117 | **null** | 229 |
+| RIOT | 18 | 27 | **null** | 23 |
+| PLUG | 13 | 20 | **null** | 8 |
+| SOFI | 9 | 11 | **null** | 1 |
+
+`mentions_1h` NULL on every row — the window ruling holding in production. Growth arithmetic
+verified by hand: RKLB 100−340 = −240, PLUG 13−8 = +5, SOFI 9−1 = +8, all matching the stored
+`mention_growth_24h`.
+
+**Seed #1's live gates are the apewisdom variant:** `mention_zscore`, `social_accel`,
+`rel_volume_zscore`, **`mentions_24h`, `mention_growth_24h`** — so the seed sync and
+`featureEngine` agree on the primary source, which is the property the single-definition rule
+exists to guarantee.
+
+`mention_zscore` is NULL, correctly: the baseline needs 20 observations and has a handful.
+
+### Root cause of the deploy failures — there was no GitHub connection
+
+Railway's Source showed **"GitHub Repo not found"**. Every deployment in the service's history,
+including each manual redeploy, rebuilt the same original commit the service was created from.
+It never saw `844c5e2` or anything after. Root Directory was empty, so that was never the issue.
+
+**Two hypotheses were advanced from this side and both were wrong** — first that a missing
+`ANTHROPIC_API_KEY` was killing the new container at boot, then that `watchPatterns` were
+resolving against a non-root Root Directory and matching nothing. Both fitted the evidence:
+punctual ticks, healthy `/health`, correct behaviour for the code actually running. The error was
+reasoning about *why a deploy did not apply* while never testing whether the service could see
+the repository at all. The earlier stale-writer episode had already taught that lesson — a
+process was assumed to be Railway's when it was local — and the same assumption was made again
+one level up.
+
+`watchPatterns` were removed anyway (`7cd7451`); harmless, and for a four-dependency backend
+deploying on every push is the right default. But it was not the fix.
+
+---
+
+## BRIDGE SOCIAL SOURCE (ApeWisdom) — original proposal and rulings
 
 The task's item 4 gates the rest, and the answer is not obvious. Worse, investigating the API
 surfaced a second gating problem the task did not anticipate. Both need an owner decision.
