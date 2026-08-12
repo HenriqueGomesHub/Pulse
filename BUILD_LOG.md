@@ -317,6 +317,25 @@ promotion loop, modelled on the short-side restriction: skipped without consumin
 retirement, so the retirement stays available to a candidate that can fire. Demonstrated —
 `04b0812` ends the cycle with 3 active and one unfirable; the fix ends with 4 active, all firable.
 
+### CONTROLLING INTERPRETATION — §5.2 over the §6.2 floor (ratified 2026-08-12)
+
+**Where spec §5.2 ("a strategy must never sit `active` while structurally unable to fire") and
+§6.2's floor ("the active set never drops below 3") cannot both hold, §5.2 controls. The floor
+yields, and the breach is logged loudly.** This is the owner-ratified reading of the two rulings
+and governs any future case where they conflict.
+
+The reasoning, as ratified:
+
+> The floor exists to stop the *evolution loop* retiring strategies that work, because retirement
+> is permanent and there is no un-retire path. A strategy that cannot fire is not one that works,
+> and holding it active buys a number that lies — a number that feeds `active.length`, the
+> retirement permission and the cap of 6, so a padded floor would let the loop retire a real
+> strategy on the strength of a phantom. Demotion, unlike retirement, is reversible and reverses
+> itself when the primary source changes back.
+
+The log line names the active count, how many were demoted on that tick, and the reasoning, so an
+observer seeing 2 active does not read it as decay.
+
 ### A conflict between two ratified rulings — firability wins, loudly
 
 The reconciler enforced the cap of 6 but ignored the floor of 3, so demotions could breach it.
