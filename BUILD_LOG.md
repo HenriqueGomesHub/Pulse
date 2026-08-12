@@ -735,6 +735,102 @@ lifecycle run.
 
 ---
 
+## SHADOW BOOK — PROPOSAL, awaiting decisions before implementation
+
+Three decisions were asked for. Two have clear answers from the code. **The third has a blocker
+that makes the design intent unimplementable as written**, and needs an owner ruling.
+
+### 1. Storage — separate `shadow_trades` table. Not a status enum.
+
+The brief asks which isolates harder, and the code answers it decisively: **`trades` is read or
+written at 26 sites across 5 files**, including the three that must never see a shadow row —
+`statsRollup.js:15` (real strategy stats), `evolution.js:63` (the holdout replay's trade
+aggregates), and `strategyRunner.js:61,67` (the PDT counters themselves).
+
+A `status = 'shadow'` enum value makes correctness depend on 26 filters being right, and staying
+right forever. Every future query against `trades` becomes a new opportunity to blend
+counterfactual outcomes into real expectancy, and **the failure is silent** — a missing
+`AND status <> 'shadow'` produces a plausible number, not an error. That is the same failure
+shape as the instrument seam nulled on 2026-08-12, which reached the evolution loop's promotion
+bar undetected.
+
+A separate table isolates *structurally*: a query that does not name `shadow_trades` cannot read
+one, and none of the 26 existing sites name it. Isolation becomes a property of the schema rather
+than of 26 remembered predicates. It also keeps `trades`' columns honest — `alpaca_order_id`,
+`exit_order_id` and `exit_attempt` are meaningless for a position that never reaches a broker.
+
+### 2. BLOCKER — at the moment every named guard fires, there is no signal to reuse
+
+The brief requires shadow entries to "reuse the real signal + conviction, not re-derive them".
+**They cannot, because none exists yet.** Traced through `strategyRunner`:
+
+| guard | line | what it does | signal exists? |
+|---|---|---|---|
+| session blackout | `:145-148` | `return` before anything | **no** |
+| PDT budget | `:163-167` | `return` before eligibility | **no** |
+| eligibility | `:171` | SQL filter; ineligible symbols never enter the loop | **no** |
+| max-concurrent | `:195` | `break` before `evaluate()` | **no** |
+| duplicate position | `:196` | `continue` before `evaluate()` | **no** |
+
+`evaluate()` is not called until `:202`, and the `signals` row is not inserted until `:221`. All
+five blocks precede both. The only skips that happen *after* a signal row exists are the
+conviction ones — `budgetExceeded` at `:227` and `conviction < 0.4` at `:233` — and those are
+deliberate counterfactual records already, not guard blocks.
+
+So shadowing a guard-blocked entry requires **evaluating strategies the guards have already
+refused**, which means restructuring the early returns. **The brief forbids "touching any guard
+logic".** The design intent and the forbidden list are in direct conflict, and only you can
+resolve it.
+
+Three ways out:
+
+- **(a) Shadow only the post-signal skips.** Zero guard changes; the conviction-blocked cases
+  already have a signal and conviction to reuse. But it shadows nothing the brief actually named —
+  and notably **not the PDT lockout that motivated this work**, so the current 6-session blackout
+  would still produce no evidence.
+- **(b) Split "evaluate" from "act".** Let evaluation run unconditionally, and move the guards to
+  the point of *acting* on a signal. This is the honest fix and gives full coverage. It is
+  structurally a change to where guards sit, though not to what any guard decides — the same
+  refusals, reached the same way, applied one step later. It needs explicit authorisation given
+  the forbidden list, and it touches the money path's most-audited file.
+- **(c) A parallel shadow evaluation pass** that runs after the real runner returns, re-deriving
+  signals independently. No guard is touched. But it duplicates the evaluation path, which is the
+  exact duplication the phase-3 and cycle-2 audits both flagged as a defect class, and it
+  re-derives rather than reuses — contradicting the brief's own instruction.
+
+**My recommendation is (b)**, with the guard *decisions* left byte-identical and only their
+position in the flow changed, audited specifically for that.
+
+**A cost consequence that applies to (b) and (c) either way:** conviction is a real Claude call,
+capped at 50/day. Shadowing means signals fire on ticks that currently produce none, so shadow
+entries consume that budget and can starve real entries once the lockout lifts. Options: a
+separate shadow budget, shadow entries recording conviction as NULL and being excluded from the
+"conviction passed" requirement, or accepting the shared cap. **This needs a decision too** — the
+brief says shadow must never consume *PDT* budget, but is silent on the Claude budget.
+
+### 3. Exit tracking — structural impossibility via module boundary
+
+Make it impossible by construction rather than by condition: put shadow exit tracking in its own
+module that **does not import `services/alpaca.js` at all**. `submitOrder` is then not in scope,
+so no code path can reach order submission — not because a branch avoids it, but because the
+function does not exist in that file. That is greppable, testable, and cannot regress silently the
+way an `if (!isShadow)` can.
+
+Pricing comes from `market_snapshots` (the same source `positionTracker`'s `LATEST_PRICE_SQL`
+already uses), so the shadow path makes **no Alpaca call whatsoever** — not orders, not positions,
+not quotes. Exit legs reuse `engine.js`'s `evaluate()` with `in_position: true`, exactly as the
+real tracker does, so the exit semantics cannot drift.
+
+Slippage: the real trades measured ~0.067% round-trip cost on three fills. A shadow fill should
+apply a stated constant in the adverse direction at both entry and exit rather than assuming a
+free fill. Propose 0.05% per side as a starting figure, flagged provisional and reviewable
+against real fills, in the same way the `mentions_24h >= 25` threshold is.
+
+**Nothing is implemented.** Awaiting rulings on 2(a/b/c), the Claude budget question, and
+confirmation of the slippage constant.
+
+---
+
 ## PDT IS A HARD RISK GUARD, NOT A TEST KNOB — owner decision, 2026-08-12
 
 **Precedent, binding on all future verification work: verification plans bend around the risk
