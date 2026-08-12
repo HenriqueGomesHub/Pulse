@@ -735,6 +735,64 @@ lifecycle run.
 
 ---
 
+## PDT IS A HARD RISK GUARD, NOT A TEST KNOB — owner decision, 2026-08-12
+
+**Precedent, binding on all future verification work: verification plans bend around the risk
+guards. The guards do not bend around verification schedules.**
+
+On 2026-08-12 the Phase 4/5 lifecycle run was blocked by the PDT guard, and three routes around
+it were considered. Two were declined on principle:
+
+- **Relaxing the guard for the test** — declined. PDT is a hard risk guard.
+- **Revisiting the reservation policy's design to rescue the schedule** — declined, as the same
+  principle one level up. Redesigning a guard because it inconvenienced a test is the same act as
+  disabling it, with extra steps.
+
+**The reservation policy stands as designed:** a position must never exist without same-day stop
+capacity, because a stop is not optional and an intention to hold overnight is not enforceable
+against one. `strategyRunner:162` computes `dayTradeBudget = 3 − used − reserved` and refuses all
+entries at zero.
+
+### The finding that made it bite: a full day-trade budget locks out ALL entries
+
+Because every position opened in a session reserves a day-trade slot, three closed day trades
+leave `used = 3`, `budget = 0`, and **no new entry is possible for the rest of the rolling
+window** — regardless of the intended holding period. There is no "I promise to hold this
+overnight" path, and there should not be.
+
+This was not visible until it bound. Tuesday's lifecycle ran **three** round trips (APLD, CLSK,
+FCEL) where **one** would have proven the same lifecycle; that choice consumed the entire budget
+and cost the following five sessions. One round trip is sufficient proof.
+
+### Why this counts as real rather than theatre
+
+**The paper account holds $100,000, where real PDT rules would not bind at all.** Enforcing it
+anyway was the day-one decision in spec §3 — "respect PDT from day one so results transfer to
+live". Today is the day that decision cost something: it blocked a verification the build wanted,
+on an account the rule does not legally apply to, and it was upheld anyway. A guard that has
+never refused anything inconvenient has not been tested; this one now has.
+
+### Consequence — entry-locked until 2026-08-18, for every writer
+
+The lockout is a property of the database, not of any particular process, so it binds Railway and
+supervised local runs identically. **Resuming Railway therefore costs nothing on the trade side**
+— it cannot open a position either — while the ingest and baseline side continues to mature.
+
+### Reschedule
+
+- **Supervised lifecycle: Tuesday 2026-08-18 at the open**, same sequence — pause Railway,
+  confirm no ticks, run locally at HEAD under temporary thresholds, real Claude conviction call,
+  order carrying conviction, tracked to a closed trade, restore thresholds and verify against the
+  `strategies` row, resume.
+- **ONE round trip.** Sufficient proof, and it leaves 2 of 3 budget rather than consuming it all.
+- Phase 4 and Phase 5 gates close that day.
+
+**Until then, Phase 6 observation effectively begins.** Ingest runs, baselines mature, and seed
+#1's `mention_zscore` reaches a genuine 7-day baseline right around the 18th — so the trustworthy
+z-score and the reopened trade budget arrive together.
+
+---
+
 ## FINAL SUMMARY — end of the build run, 2026-08-11
 
 Phases 1–3 passed their gates. Phases 4 and 5 are built, audited and fixed, but **both gates are
@@ -751,17 +809,22 @@ closed. Phase 6 is explicitly not part of this run.
 | 4 — full strategy set + stats | **PARTIAL** | live conviction lifecycle — next open |
 | 5 — evolution | **PARTIAL** | inherits the same deferral |
 
-### The single blocking item
+### The single blocking item — rescheduled to 2026-08-18
 
 **A real entry signal → real Claude conviction call → real order carrying that conviction has
 never run.** Everything around it is verified — the call works (305 in / 103 out tokens,
 conviction 0.73 parsed), the budget guard works, the failure paths work, exits provably make no
 call — but the end-to-end path through `strategyRunner` has not executed against a live market.
 
-**Complete this FIRST at the next open (2026-08-12 09:30 ET), before anything else.** With
-social data still absent, seed #1 cannot fire on real thresholds, so this needs the
-temporary-threshold method from spec §8 phase 2 — lower the entry, run the lifecycle, restore,
-and record the restoration.
+**Attempted 2026-08-12 and blocked by the PDT guard**, which had been fully consumed by Tuesday's
+three round trips. See the PDT precedent above. Rescheduled to **Tuesday 2026-08-18 at the open**,
+one round trip, using the temporary-threshold method from spec §8 phase 2 — lower the entry, run
+the lifecycle, restore, and verify the restoration against the `strategies` row.
+
+By then social data will no longer be absent: the ApeWisdom bridge is live and `mention_zscore`
+became non-NULL on all 20 tickers overnight on 2026-08-12, reaching a genuine 7-day baseline
+around the 18th. The temporary-threshold method is still required, because seed #1's real gates
+need a real 3-sigma attention spike that may simply not occur on the day.
 
 ### Owner decisions still open
 
