@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { VOCABULARY, evaluate } from './engine.js';
-import { seedsFor } from './seeds.js';
+import { canFireUnder, seedsFor } from './seeds.js';
 
 const MENTION_SOURCES = ['reddit', 'apewisdom'];
 const seedNamed = (source, name) => seedsFor(source).find((seed) => seed.name === name).params;
@@ -223,6 +223,27 @@ test('seed #1 under apewisdom requires 24h volume AND growth, and cannot be sati
 test('a source that is excluded from mention counts has no seed variant at all', () => {
   assert.throws(() => seedsFor('stocktwits'), /absolute-substance gates/);
   assert.throws(() => seedsFor(undefined), /absolute-substance gates/);
+});
+
+test('canFireUnder rejects an entry that gates on the non-primary source own mention features', () => {
+  for (const source of MENTION_SOURCES) {
+    for (const seed of seedsFor(source)) {
+      assert.equal(canFireUnder(source, seed.params), true, `${source}/${seed.name}`);
+    }
+  }
+  assert.equal(canFireUnder('apewisdom', seedNamed('reddit', 'social-breakout')), false);
+  assert.equal(canFireUnder('reddit', seedNamed('apewisdom', 'social-breakout')), false);
+});
+
+test('canFireUnder only condemns an "all" entry: one usable condition is enough under "any"', () => {
+  const anyEntry = {
+    entry: { any: [{ feature: 'mentions_24h', op: 'gte', value: 25 }, { feature: 'price_momentum', op: 'gt', value: 1 }] },
+  };
+  assert.equal(canFireUnder('reddit', anyEntry), true);
+  assert.equal(
+    canFireUnder('reddit', { entry: { any: [{ feature: 'mentions_24h', op: 'gte', value: 25 }] } }),
+    false
+  );
 });
 
 test('evaluate is pure: it does not mutate its arguments', () => {

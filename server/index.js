@@ -5,7 +5,7 @@ import { pool } from './db/pool.js';
 import { dashboardRoutes } from './routes/dashboard.js';
 import { primaryMentionSource } from './services/mentionSource.js';
 import { apewisdomIngest } from './workers/apewisdomIngest.js';
-import { evolution } from './workers/evolution.js';
+import { MAX_ACTIVE_STRATEGIES, evolution } from './workers/evolution.js';
 import { featureEngine } from './workers/featureEngine.js';
 import { marketIngest } from './workers/marketIngest.js';
 import { positionTracker } from './workers/positionTracker.js';
@@ -14,10 +14,25 @@ import { stocktwitsIngest } from './workers/stocktwitsIngest.js';
 import { statsRollup } from './workers/statsRollup.js';
 import { strategyRunner } from './workers/strategyRunner.js';
 import { tickerMetaRefresh } from './workers/tickerMetaRefresh.js';
-import { seedsFor } from './strategies/seeds.js';
+import { canFireUnder, seedsFor } from './strategies/seeds.js';
 
 const WINDOW_OPEN_MINUTES = 7 * 60 + 30;
 const WINDOW_CLOSE_MINUTES = 18 * 60;
+
+const FIRABILITY_SQL = `
+  SELECT s.id, s.name, s.status, s.params,
+         EXISTS (
+           SELECT 1 FROM evolution_log p
+           WHERE p.strategy_id = s.id AND p.action = 'promote'
+             AND NOT EXISTS (
+               SELECT 1 FROM evolution_log r
+               WHERE r.strategy_id = s.id AND r.action = 'retire' AND r.ts > p.ts
+             )
+         ) AS promoted_and_not_retired
+  FROM strategies s
+  WHERE s.status IN ('active', 'candidate')
+  ORDER BY s.id
+`;
 
 function inMarketWindow(now) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -36,6 +51,29 @@ function inMarketWindow(now) {
   return minutes >= WINDOW_OPEN_MINUTES && minutes <= WINDOW_CLOSE_MINUTES;
 }
 
+async function reconcileFirability(source) {
+  const { rows } = await pool.query(FIRABILITY_SQL);
+  let active = rows.filter((row) => row.status === 'active').length;
+
+  for (const row of rows) {
+    const firable = canFireUnder(source, row.params);
+
+    if (row.status === 'active' && !firable) {
+      await pool.query("UPDATE strategies SET status = 'candidate' WHERE id = $1 AND status = 'active'", [row.id]);
+      active -= 1;
+      console.warn(
+        `[pulse] "${row.name}" (id ${row.id}) demoted active → candidate: its entry block gates on a mention feature that is NULL while ${source} is the primary mention source, so it is structurally unable to fire`
+      );
+    } else if (row.status === 'candidate' && firable && row.promoted_and_not_retired && active < MAX_ACTIVE_STRATEGIES) {
+      await pool.query("UPDATE strategies SET status = 'active' WHERE id = $1 AND status = 'candidate'", [row.id]);
+      active += 1;
+      console.warn(
+        `[pulse] "${row.name}" (id ${row.id}) restored candidate → active: the evolution loop promoted it and never retired it, and its entry block can fire again under ${source}`
+      );
+    }
+  }
+}
+
 async function runPipeline(forceMarket) {
   const startedAt = Date.now();
   await pool.query(
@@ -43,7 +81,8 @@ async function runPipeline(forceMarket) {
     [WATCHLIST]
   );
 
-  for (const seed of seedsFor(await primaryMentionSource())) {
+  const source = await primaryMentionSource();
+  for (const seed of seedsFor(source)) {
     await pool.query(
       'UPDATE strategies SET params = $3 WHERE name = $1 AND generation = $2',
       [seed.name, seed.generation, seed.params]
@@ -55,6 +94,7 @@ async function runPipeline(forceMarket) {
       [seed.name, seed.generation, seed.params, seed.status]
     );
   }
+  await reconcileFirability(source);
 
   const tasks = [redditIngest(), stocktwitsIngest(), apewisdomIngest()];
   if (forceMarket || inMarketWindow(new Date())) {

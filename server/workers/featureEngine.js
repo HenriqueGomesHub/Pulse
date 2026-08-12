@@ -1,10 +1,14 @@
 import { pool } from '../db/pool.js';
-import { MENTION_BASELINE_INTERVAL, primaryMentionSource } from '../services/mentionSource.js';
+import {
+  MENTION_BASELINE_INTERVAL,
+  MENTION_BASELINE_MIN_OBS,
+  primaryMentionSource,
+} from '../services/mentionSource.js';
 
 const MIN_OBS_REL_VOLUME_30D = 20;
-const MIN_OBS_MENTIONS_7D = 20;
 const MIN_OBS_MENTIONS_24H = 12;
 const MENTION_SD_FLOOR = 1;
+const HOUR_MS = 60 * 60 * 1000;
 
 const MARKET_SQL = `
   WITH recent AS (
@@ -38,7 +42,8 @@ const MENTION_SQL = `
     SELECT symbol, ts,
            (CASE WHEN $1 = 'apewisdom' THEN mentions_24h ELSE mentions_1h END)::numeric AS mentions,
            mentions_1h, unique_authors_1h, mentions_24h, upvotes_24h,
-           (raw->>'mentions_24h_ago')::numeric AS mentions_24h_ago
+           CASE WHEN jsonb_typeof(raw->'mentions_24h_ago') = 'number'
+                THEN (raw->>'mentions_24h_ago')::numeric END AS mentions_24h_ago
     FROM social_snapshots
     WHERE source = $1 AND ts > now() - interval '${MENTION_BASELINE_INTERVAL}'
   ),
@@ -57,13 +62,15 @@ const MENTION_SQL = `
     WHERE ts > now() - interval '24 hours'
     GROUP BY symbol
   )
-  SELECT r.symbol, r.mentions, r.mentions_1h, r.unique_authors_1h,
+  SELECT r.symbol, r.ts, r.mentions, r.mentions_1h, r.unique_authors_1h,
          r.mentions_24h, r.upvotes_24h, r.mentions_24h_ago,
+         p.ts AS prev_ts, p.mentions AS prev_mentions,
          w.n AS week_n, w.mean AS week_mean, w.sd AS week_sd,
          d.n AS day_n, d.mean AS day_mean, d.sd AS day_sd
   FROM ranked r
   JOIN week w USING (symbol)
   LEFT JOIN day d USING (symbol)
+  LEFT JOIN ranked p ON p.symbol = r.symbol AND p.rn = 2
   WHERE r.rn = 1
 `;
 
@@ -104,18 +111,16 @@ function exhaustionScore(inputs) {
 export async function featureEngine() {
   const ts = new Date();
   const primarySource = await primaryMentionSource();
-  const [tickers, market, social, bull, previous] = await Promise.all([
+  const [tickers, market, social, bull] = await Promise.all([
     pool.query('SELECT symbol, days_to_cover FROM tickers ORDER BY symbol'),
     pool.query(MARKET_SQL),
     pool.query(MENTION_SQL, [primarySource]),
     pool.query(BULL_RATIO_SQL),
-    pool.query('SELECT DISTINCT ON (symbol) symbol, social_velocity FROM features ORDER BY symbol, ts DESC'),
   ]);
 
   const marketBySymbol = new Map(market.rows.map((row) => [row.symbol, row]));
   const socialBySymbol = new Map(social.rows.map((row) => [row.symbol, row]));
   const bullBySymbol = new Map(bull.rows.map((row) => [row.symbol, row]));
-  const previousVelocity = new Map(previous.rows.map((row) => [row.symbol, num(row.social_velocity)]));
 
   const values = [];
   const params = [];
@@ -149,12 +154,17 @@ export async function featureEngine() {
       ? zscore(mentions, num(s.day_mean), num(s.day_sd), num(s.day_n), MIN_OBS_MENTIONS_24H)
       : null;
     const mentionZscore = s
-      ? zscore(mentions, num(s.week_mean), num(s.week_sd), num(s.week_n), MIN_OBS_MENTIONS_7D, MENTION_SD_FLOOR)
+      ? zscore(mentions, num(s.week_mean), num(s.week_sd), num(s.week_n), MENTION_BASELINE_MIN_OBS, MENTION_SD_FLOOR)
       : null;
 
-    const priorVelocity = previousVelocity.get(symbol) ?? null;
+    const priorVelocity = s
+      ? zscore(num(s.prev_mentions), num(s.day_mean), num(s.day_sd), num(s.day_n), MIN_OBS_MENTIONS_24H)
+      : null;
+    const observationHours = s && s.prev_ts ? (s.ts.getTime() - s.prev_ts.getTime()) / HOUR_MS : null;
     const socialAccel =
-      socialVelocity === null || priorVelocity === null ? null : socialVelocity - priorVelocity;
+      socialVelocity === null || priorVelocity === null || !(observationHours > 0)
+        ? null
+        : (socialVelocity - priorVelocity) / observationHours;
 
     const authorQuality =
       mentions === null || authors === null || mentions === 0 ? null : authors / mentions;

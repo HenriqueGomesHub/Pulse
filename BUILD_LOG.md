@@ -223,8 +223,16 @@ with a courtesy `User-Agent` identifying Pulse and polite backoff on 429/5xx.
 
 ### TIMELINE — for phase 6 expectations
 
-- **~100 minutes** after `featureEngine` starts consuming apewisdom rows: first non-NULL
-  `mention_zscore` (`MIN_OBS_MENTIONS_7D = 20` observations at one row per 5-minute tick).
+**Corrected 2026-08-12.** The original figure below assumed one observation per 5-minute tick.
+The dedup ruling, in the same commit, made that unreachable for most tickers — three live ingest
+ticks produced 20, 1 and 4 rows, with fifteen of twenty tickers contributing a single
+observation. The heartbeat ruling sets the real cadence.
+
+- **~10 hours** from cold: first non-NULL `mention_zscore`. `MIN_OBS_MENTIONS_7D = 20`
+  observations at the 30-minute heartbeat is 10 hours for a ticker whose payload never changes.
+  An actively-discussed ticker reaches it sooner, since every genuine change also writes a row.
+- ~~**~100 minutes** … at one row per 5-minute tick~~ — wrong, superseded. Recorded rather than
+  deleted, because the wrong number was committed and a phase-6 observer may have read it.
 - **~7 days**: the z-score becomes statistically meaningful rather than a score against a
   near-degenerate sample. Deferred **M5** records that the 20-observation minimum is far below
   the window it claims to cover.
@@ -233,7 +241,51 @@ with a courtesy `User-Agent` identifying Pulse and polite backoff on 429/5xx.
 - **2 weeks**: review the provisional `mentions_24h >= 25` threshold against real distribution.
 
 Phase 6 observation notes should not read early seed #1 signals as validation, nor its silence
-before ~100 minutes as a defect.
+before the ~10-hour mark as a defect.
+
+### Fix-cycle rulings 2026-08-12 (audit of `844c5e2`)
+
+The audit confirmed all six original rulings honoured at the write path, `evaluate()`
+byte-identical, source switching fail-safe in both directions, and **H1 genuinely closed**. It
+also found five HIGH defects. Owner rulings:
+
+**Dedup → heartbeat.** Keep the intent — identical payloads must not multiply — but write a row
+at least **every 30 minutes per watchlist ticker regardless of change**. The reasoning that
+matters: *the baseline needs continuous observation of a continuous quantity — "unchanged" is an
+observation, not an absence.*
+
+Without it, two defects compounded. Dedup had no time filter while the baseline is a rolling
+7-day inner join, so a ticker whose payload stopped changing would leave the pipeline
+**permanently** — BITF, EOSE and FCEL carry `{"absent_from_ranking": true}`, constant by
+construction, and would have dropped out on 2026-08-19, self-perpetuating because no row written
+means nothing re-enters the window. And dedup starved the observation minimums exactly when the
+signal appears: a cold ticker sits at n=1, so its spike *is* its second observation,
+`mention_zscore` is NULL at the breakout, and dedup converted "fires" into "structurally cannot
+fire". It also killed seed #3, whose target — the quiet ticker — is by definition the one whose
+payload never moves.
+
+**Instrument seam → null the historical mention columns.** `social_snapshots` has never held a
+single reddit row, so every historical mention-derived value in `features` is
+**Stocktwits-derived**. The audit verified it numerically: the last pre-seam row showed LUNR 3,
+PLUG 5, BBAI 4, SOUN 1, ASTS 2, RKLB 5, QBTS 0, FCEL 0 — an exact match for the `stocktwits`
+rows at 02:25:00, with the four symbols lacking a Stocktwits row being exactly the four NULLs.
+
+Left in place, the holdout replay would evaluate `mentions_1h >= 5` against a month of Stocktwits
+message counts and hand the resulting fabricated expectancy to the evolution loop as the bar
+gating every promotion and retirement.
+
+So `mentions_1h`, `unique_authors_1h`, `mention_zscore`, `social_velocity`, `social_accel`,
+`author_quality` and `exhaustion_score` are nulled on pre-seam `features` rows. Same principle as
+the `days_to_cover` non-backfill: **NULL blocks entries and a replay reading it honestly says "no
+data", whereas a plausible-looking number from the wrong instrument is worse than a hole.**
+
+**The raw `social_snapshots` rows are preserved untouched.** `bull_ratio` stays valid and the
+snapshots remain honest data about what Stocktwits said. Only their masquerade as mention
+features dies.
+
+**Precedence requires sustained presence.** Reddit becomes primary only after sustained
+successful ingestion, not on a single row, and demotes symmetrically — one transient HTTP 200
+would otherwise have blacked out the mention pipeline for seven days.
 
 ---
 

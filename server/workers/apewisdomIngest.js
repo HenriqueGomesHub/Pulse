@@ -6,11 +6,15 @@ const USER_AGENT = 'pulse/1.0 (paper-trading research agent; +https://github.com
 const MAX_PAGES = 20;
 const MAX_ATTEMPTS = 3;
 const BACKOFF_MS = 2000;
+const MAX_BACKOFF_MS = 5000;
+const RETRY_BUDGET_MS = 60000;
+const HEARTBEAT_MINUTES = 30;
 
 const LAST_PAYLOAD_SQL = `
   SELECT DISTINCT ON (symbol) symbol, raw
   FROM social_snapshots
   WHERE source = 'apewisdom' AND symbol = ANY($1)
+    AND ts > now() - interval '${HEARTBEAT_MINUTES} minutes'
   ORDER BY symbol, ts DESC
 `;
 
@@ -23,7 +27,7 @@ function canonical(payload) {
   return JSON.stringify(Object.keys(payload).sort().map((key) => [key, payload[key]]));
 }
 
-async function fetchPage(page) {
+async function fetchPage(page, deadline) {
   for (let attempt = 1; ; attempt += 1) {
     const response = await fetch(`${PAGE_URL}${page}`, { headers: { 'User-Agent': USER_AGENT } });
     if (response.ok) return response.json();
@@ -33,23 +37,48 @@ async function fetchPage(page) {
       throw new Error(`apewisdom page ${page} returned ${response.status}`);
     }
     const retryAfter = Number(response.headers.get('retry-after'));
-    await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : BACKOFF_MS * attempt);
+    const asked = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : BACKOFF_MS * attempt;
+    const wait = Math.min(asked, MAX_BACKOFF_MS);
+    if (Date.now() + wait > deadline) {
+      throw new Error(
+        `apewisdom page ${page} returned ${response.status} and asked for ${asked}ms; the ${RETRY_BUDGET_MS}ms retry budget for this tick is spent`
+      );
+    }
+    await sleep(wait);
   }
 }
 
+function pageResults(body, page) {
+  const results = body?.results;
+  if (!Array.isArray(results) || results.length === 0) {
+    throw new Error(`apewisdom page ${page} returned no results — refusing to read an empty page as the end of the ranking`);
+  }
+  return results;
+}
+
 async function fetchRanking() {
-  const first = await fetchPage(1);
+  const deadline = Date.now() + RETRY_BUDGET_MS;
+  const first = await fetchPage(1, deadline);
   const pages = Number(first.pages);
+  const count = Number(first.count);
   if (!Number.isInteger(pages) || pages < 1) {
     throw new Error(`apewisdom returned an unusable page count: ${JSON.stringify(first.pages)}`);
+  }
+  if (!Number.isInteger(count) || count < 1) {
+    throw new Error(`apewisdom returned an unusable ranking size: ${JSON.stringify(first.count)}`);
   }
   if (pages > MAX_PAGES) {
     throw new Error(`apewisdom reports ${pages} pages, above the ${MAX_PAGES} bound — refusing to read a partial ranking as complete`);
   }
 
-  const results = [...first.results];
+  const results = [...pageResults(first, 1)];
   for (let page = 2; page <= pages; page += 1) {
-    results.push(...(await fetchPage(page)).results);
+    results.push(...pageResults(await fetchPage(page, deadline), page));
+  }
+  if (results.length !== count) {
+    throw new Error(
+      `apewisdom collected ${results.length} of the ${count} ranked tickers it reports over ${pages} pages — refusing to read an incomplete ranking as absence`
+    );
   }
   return results;
 }
@@ -88,7 +117,7 @@ export async function apewisdomIngest() {
 
   if (values.length === 0) {
     console.log(
-      `[apewisdomIngest] ${ranked.length} ranked tickers, all ${unchanged} watchlist payloads unchanged, inserted 0 rows`
+      `[apewisdomIngest] ${ranked.length} ranked tickers, all ${unchanged} watchlist payloads unchanged since a row written inside the last ${HEARTBEAT_MINUTES} minutes, inserted 0 rows`
     );
     return;
   }
@@ -99,6 +128,6 @@ export async function apewisdomIngest() {
     params
   );
   console.log(
-    `[apewisdomIngest] ${ranked.length} ranked tickers, inserted ${values.length} rows, ${unchanged} unchanged`
+    `[apewisdomIngest] ${ranked.length} ranked tickers, inserted ${values.length} rows, ${unchanged} unchanged inside the ${HEARTBEAT_MINUTES}-minute heartbeat`
   );
 }

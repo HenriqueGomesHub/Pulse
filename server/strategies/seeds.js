@@ -9,6 +9,17 @@ const SUBSTANCE_GATES = {
   ],
 };
 
+export function canFireUnder(primaryMentionSource, params) {
+  const unavailable = new Set(
+    Object.entries(SUBSTANCE_GATES)
+      .filter(([source]) => source !== primaryMentionSource)
+      .flatMap(([, gates]) => gates.map((gate) => gate.feature))
+  );
+  const conditions = params.entry.all ?? params.entry.any;
+  const satisfiable = conditions.filter((condition) => !unavailable.has(condition.feature));
+  return params.entry.all ? satisfiable.length === conditions.length : satisfiable.length > 0;
+}
+
 export function seedsFor(primaryMentionSource) {
   const substance = SUBSTANCE_GATES[primaryMentionSource];
   if (!substance) {
