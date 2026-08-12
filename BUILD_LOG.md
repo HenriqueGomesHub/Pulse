@@ -213,8 +213,46 @@ that lineage.** The failure is silent and looks exactly like "no candidate was g
 All 57 non-stale rows fall *outside* the entry window, so **at present zero in-window rows carry
 the three features**.
 
-**Backfill is computable and is proposed, not performed.** All three are derivable from data
-already stored, with no external call:
+**BACKFILL — owner decision, 2026-08-11. Two columns filled, the third deliberately not.**
+
+- **`price_momentum_1d` and `price_momentum_2d` ARE backfilled**, each row reconstructed from the
+  `market_snapshots` state at or before its own `ts`. These are genuine per-tick reconstructions
+  of what was true at the time, validated against the rows current code had already written
+  correctly.
+- **`days_to_cover` is deliberately NOT backfilled and stays NULL for historical rows.**
+  `tickers.days_to_cover` holds a single *current* value; writing it onto past ticks would stamp
+  today's short interest onto history — exactly the look-ahead that per-tick denormalisation
+  exists to prevent (spec §4). An honest backfill needs a join to the FINRA settlement in force
+  at each row's own timestamp. NULL is the conservative error: it blocks entries rather than
+  inventing them.
+
+**The asymmetry is a choice, not an oversight.** Anyone reading two filled columns beside one
+empty one should not "complete" the third.
+
+**Executed 2026-08-12.** 931 rows updated, matching the dry run exactly. Coverage of the 30-day
+window afterwards:
+
+| | rows | `price_momentum_1d` | `price_momentum_2d` | `days_to_cover` |
+|---|---|---|---|---|
+| inside 09:45–15:45 ET | 260 | 247 | 247 | **0** |
+| outside | 800 | 741 | 741 | 57 |
+
+The in-window replay tape went from **zero** usable rows to 247, with 48 clearing seed #2's
+`price_momentum_1d > 3`. The 52 unfillable rows are all BITF, which has never had a single
+`market_snapshots` row — NULL is correct there.
+
+Reconstruction was validated against the 57 rows current code had already written, on four
+independent checks, all 57 bit-identical (the chained 2-day formula to 1.6e-14). A falsification
+check confirmed the implied in-progress close falls inside the day's actual high–low range for
+all 710 snapshots, excluding a shifted-bar misreading. Column md5s confirm `days_to_cover` and
+every other table were untouched.
+
+**Consequence to carry into phase 6:** seed #2's lineage stays NULL-holdout-blocked until the
+live window accumulates roughly 30 days of real `days_to_cover` rows — no swap can occur on that
+lineage until around **mid-September 2026**. That is correct behaviour, not a defect. Phase 6
+observation notes should expect it, and should not read "seed #2 never evolves" as a bug.
+
+Original assessment of what was computable, retained for reference:
 
 - `price_momentum_1d` / `price_momentum_2d` — `market_snapshots.pct_change_1d` already exists for
   the whole window; `pct_change_2d` exists only on rows written by current code, but both are
@@ -250,6 +288,11 @@ At HEAD, `featureEngine` reads `tickers.days_to_cover` — which is populated fo
 database schema is migrated; the code writing to it is not.
 
 Ticks are arriving on schedule, so the service is up — an older container is still serving.
+
+**Second redeploy also had no effect.** Verified across **eleven consecutive ticks** spanning
+23:30 → 00:20 UTC, every one writing NULL into all three columns. Exactly one tick per 5-minute
+interval throughout, so this is a single stale instance, not a new deployment running alongside
+an old one (that would produce two ticks per interval, one of each kind).
 
 **Leading hypothesis: the new build cannot boot.** `server/config.js` now lists
 `ANTHROPIC_API_KEY` in its required-env check and calls `process.exit(1)` when it is missing.
