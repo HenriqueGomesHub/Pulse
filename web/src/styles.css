@@ -638,6 +638,125 @@ button {
   gap: 16px;
 }
 
+/* right rail — shadow book */
+
+.with-rail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .with-rail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.rail {
+  min-width: 0;
+}
+
+.shadow {
+  border-style: dashed;
+}
+
+.shadow .panel-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shadow .panel-head h2 svg {
+  color: var(--text-3);
+}
+
+.shadow .hint,
+.shadow .micro {
+  margin: 8px 0 0;
+}
+
+.rule--dashed {
+  border-top-style: dashed;
+  margin: 16px 0;
+}
+
+.shadow-table {
+  margin-top: 8px;
+}
+
+.shadow-table th,
+.shadow-table td {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+  font-weight: 400;
+}
+
+.shadow-table thead th {
+  padding-top: 0;
+}
+
+.shadow-table tbody tr:last-child > th,
+.shadow-table tbody tr:last-child > td {
+  border-bottom: 0;
+}
+
+.shadow-table .sub {
+  max-width: none;
+  overflow: visible;
+  white-space: normal;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.shadow-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.shadow-list li {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.shadow-list li:last-child {
+  border-bottom: 0;
+}
+
+.shadow-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+}
+
+.shadow-meta {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.shadow-meta .num,
+.shadow-meta .nodata {
+  font-size: 12px;
+}
+
+.shadow .banner {
+  padding: 12px 16px;
+  margin: 8px 0 0;
+}
+
+.caveat {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
 /* timeline */
 
 .timeline {

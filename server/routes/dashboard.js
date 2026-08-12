@@ -1,10 +1,12 @@
 import express from 'express';
+import { SHADOW_SLIPPAGE_PCT_PER_SIDE } from '../config.js';
 import { pool } from '../db/pool.js';
 import { describeBlock } from '../strategies/engine.js';
 
 const SPARKLINE_HOURS = 24;
 const ACTIVE_SIGNAL_HOURS = 24;
 const SIGNAL_FEED_LIMIT = 200;
+const SHADOW_CLOSED_LIMIT = 25;
 
 const isoUtc = (column) => `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
 
@@ -286,6 +288,79 @@ const PNL_CURVE_SQL = `
   ORDER BY exit_ts, id
 `;
 
+const SHADOW_OPEN_SQL = `
+  SELECT t.id::int AS id,
+         t.symbol,
+         t.strategy_id::int AS strategy_id,
+         st.name AS strategy_name,
+         t.blocked_by,
+         t.qty::float8 AS qty,
+         t.entry_price::float8 AS entry_price,
+         t.pnl_pct::float8 AS pnl_pct,
+         t.hold_hours::float8 AS hold_hours
+  FROM shadow_trades t
+  JOIN strategies st ON st.id = t.strategy_id
+  WHERE t.status = 'open'
+  ORDER BY t.entry_ts, t.id
+`;
+
+const SHADOW_CLOSED_SQL = `
+  SELECT t.id::int AS id,
+         t.symbol,
+         t.strategy_id::int AS strategy_id,
+         st.name AS strategy_name,
+         t.blocked_by,
+         t.entry_price::float8 AS entry_price,
+         t.exit_price::float8 AS exit_price,
+         t.exit_ts,
+         t.pnl_pct::float8 AS pnl_pct,
+         t.hold_hours::float8 AS hold_hours,
+         t.exit_reason
+  FROM shadow_trades t
+  JOIN strategies st ON st.id = t.strategy_id
+  WHERE t.status = 'closed'
+  ORDER BY t.exit_ts DESC NULLS LAST, t.id DESC
+  LIMIT $1::int
+`;
+
+const SHADOW_STATS_SQL = `
+  WITH agg AS (
+    SELECT strategy_id,
+           (count(pnl_pct))::int AS trades_n,
+           (count(pnl_pct) FILTER (WHERE pnl_pct > 0))::int AS wins,
+           avg(pnl_pct) FILTER (WHERE pnl_pct > 0) AS avg_win_pct,
+           avg(pnl_pct) FILTER (WHERE pnl_pct <= 0) AS avg_loss_pct
+    FROM shadow_trades
+    WHERE status = 'closed' AND pnl_pct IS NOT NULL AND exit_ts IS NOT NULL
+    GROUP BY strategy_id
+  )
+  SELECT s.id::int AS strategy_id,
+         s.name AS strategy_name,
+         COALESCE(a.trades_n, 0) AS shadow_trades_n,
+         (a.wins::numeric / NULLIF(a.trades_n, 0))::float8 AS shadow_win_rate,
+         a.avg_win_pct::float8 AS shadow_avg_win_pct,
+         a.avg_loss_pct::float8 AS shadow_avg_loss_pct,
+         (CASE
+            WHEN a.trades_n = 0 OR a.trades_n IS NULL THEN NULL
+            ELSE a.wins::numeric / a.trades_n * COALESCE(a.avg_win_pct, 0)
+               + (a.trades_n - a.wins)::numeric / a.trades_n * COALESCE(a.avg_loss_pct, 0)
+          END)::float8 AS shadow_expectancy,
+         COALESCE(r.trades_n, 0) AS real_trades_n,
+         r.expectancy::float8 AS real_expectancy
+  FROM strategies s
+  LEFT JOIN agg a ON a.strategy_id = s.id
+  LEFT JOIN strategy_stats r ON r.strategy_id = s.id AND r."window" = 'all'
+  WHERE EXISTS (SELECT 1 FROM shadow_trades x WHERE x.strategy_id = s.id)
+  ORDER BY s.id
+`;
+
+const SHADOW_DROPS_SQL = `
+  SELECT COALESCE(sum(shadow_drops) FILTER (WHERE day = (now() AT TIME ZONE 'America/New_York')::date), 0)::int
+           AS today,
+         COALESCE(sum(shadow_drops), 0)::int AS total
+  FROM claude_call_budget
+`;
+
 const EVOLUTION_SQL = `
   SELECT e.id::int AS id,
          e.ts,
@@ -345,6 +420,25 @@ dashboardRoutes.get(
         ...exitStatus(params, features, trade.pnl_pct, trade.hold_hours),
       })),
       closed: closed.rows,
+    });
+  })
+);
+
+dashboardRoutes.get(
+  '/shadow',
+  route(async (req, res) => {
+    const [open, closed, byStrategy, drops] = await Promise.all([
+      pool.query(SHADOW_OPEN_SQL),
+      pool.query(SHADOW_CLOSED_SQL, [SHADOW_CLOSED_LIMIT]),
+      pool.query(SHADOW_STATS_SQL),
+      pool.query(SHADOW_DROPS_SQL),
+    ]);
+    res.json({
+      slippage_pct_per_side: SHADOW_SLIPPAGE_PCT_PER_SIDE,
+      drops: drops.rows[0],
+      open: open.rows,
+      closed: closed.rows,
+      by_strategy: byStrategy.rows,
     });
   })
 );

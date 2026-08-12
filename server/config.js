@@ -47,6 +47,8 @@ export const MAX_DAY_TRADES_PER_5_SESSIONS = 3;
 
 export const MAX_CONVICTION_CALLS_PER_DAY = 50;
 
+export const SHADOW_SLIPPAGE_PCT_PER_SIDE = 0.05;
+
 export const MIN_ACTIVE_STRATEGIES = 3;
 
 export const MAX_ACTIVE_STRATEGIES = 6;

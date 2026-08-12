@@ -826,8 +826,46 @@ apply a stated constant in the adverse direction at both entry and exit rather t
 free fill. Propose 0.05% per side as a starting figure, flagged provisional and reviewable
 against real fills, in the same way the `mentions_24h >= 25` threshold is.
 
-**Nothing is implemented.** Awaiting rulings on 2(a/b/c), the Claude budget question, and
-confirmation of the slippage constant.
+### RULINGS — all three ratified 2026-08-12, implementation proceeding
+
+**1. Guard classification (owner decision).** Option (b) authorised, but narrower than proposed:
+**not every guard is shadow-worthy**, and the split reflects that.
+
+| class | guards | ruling |
+|---|---|---|
+| **BUDGET** | PDT budget, max-concurrent | Temporary refusals of trades the system genuinely wanted — exactly what the shadow book measures. **Relocate to act-time**, after `evaluate()` and the `signals` row. |
+| **UNIVERSE** | eligibility | A permanent property of the ticker, not a blocked trade. An OTC ticker refused is not a counterfactual worth tracking. **Stays pre-evaluation, in SQL.** |
+| **STATE** | session blackout, duplicate position | Blackout means "not yet", within minutes — shadowing it produces noise, not evidence. A duplicate means the trade already exists. **Both stay as early exits.** |
+
+So the control flow changes at **exactly two points**, not five. Guard *decisions* stay
+byte-identical — same refusals, same reasons, same arithmetic, reached one step later.
+
+**Because this is the most-audited file on the money path, the audit must verify
+refusal-equivalence explicitly**: the throwaway-database scenario method, demonstrating each
+relocated guard refuses the same entries for the same reasons before and after, including the
+entry-side reservation arithmetic computing identically at its new location.
+
+**2. Claude conviction budget — shared cap, real-first, shadow-dropped under pressure.**
+
+Shadow entries make the **same real conviction call**. A shadow book built without the conviction
+gate measures a different system and answers nothing about ours.
+
+Within a tick, conviction calls for actionable entries are made before shadow ones. If the 50/day
+cap is reached, **shadow entries are dropped with a log line, never recorded with conviction
+NULL** — a shadow row that skipped the gate would contaminate the book's comparability, whereas a
+dropped shadow is just a smaller sample. The drop count is recorded so cap pressure is visible.
+
+No separate allowance: signal volume is a handful a day against a cap of 50, and during a lockout
+there are no real entries competing at all. **If cap pressure ever becomes real, that is a finding
+worth surfacing, not budgeting around.**
+
+**3. Slippage — 0.05% per side, adverse in both directions.** Provisional. Evidence base: the
+three real fills of 2026-08-11 cost ~0.067% round trip. **Reviewed alongside the seed-#1
+`mentions_24h >= 25` threshold review on ~2026-08-26**, by which point there may be more real
+fills to calibrate against. The UI caveat names the constant.
+
+Storage as a separate table and the module-boundary exit isolation are approved exactly as
+argued above.
 
 ---
 

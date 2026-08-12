@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Briefcase, Check, Circle } from 'lucide-react';
 import { usePoll } from '../api.js';
+import ShadowBook from '../ShadowBook.jsx';
 import { ConditionText, Empty, ErrorBanner, InlineNum, NoData, Num, PageHead, Pill, Stat } from '../ui.jsx';
 import { duration, featureValue, isNum, pct, pnlTone, price, qty, signedPct, stamp } from '../format.js';
 
@@ -109,19 +110,26 @@ export default function Positions() {
         updatedAt={updatedAt}
       />
       {error ? <ErrorBanner error={error} onRetry={refetch} /> : null}
-      {loading && !data ? <p className="hint">Loading positions…</p> : null}
-      {data && open.length === 0 ? (
-        <Empty icon={Briefcase} label="Positions" title="Nothing is open right now.">
-          The agent is flat. Closed round trips are in the <Link to="/trades">trade log</Link>.
-        </Empty>
-      ) : null}
-      {open.length > 0 ? (
-        <div className="cards">
-          {open.map((trade) => (
-            <Position key={trade.id} trade={trade} />
-          ))}
+      <div className="with-rail">
+        <div>
+          {loading && !data ? <p className="hint">Loading positions…</p> : null}
+          {data && open.length === 0 ? (
+            <Empty icon={Briefcase} label="Positions" title="Nothing is open right now.">
+              The agent is flat. Closed round trips are in the <Link to="/trades">trade log</Link>.
+            </Empty>
+          ) : null}
+          {open.length > 0 ? (
+            <div className="cards">
+              {open.map((trade) => (
+                <Position key={trade.id} trade={trade} />
+              ))}
+            </div>
+          ) : null}
         </div>
-      ) : null}
+        <div className="rail">
+          <ShadowBook />
+        </div>
+      </div>
     </>
   );
 }

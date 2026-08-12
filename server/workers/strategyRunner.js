@@ -1,4 +1,8 @@
-import { MAX_CONVICTION_CALLS_PER_DAY, MAX_DAY_TRADES_PER_5_SESSIONS } from '../config.js';
+import {
+  MAX_CONVICTION_CALLS_PER_DAY,
+  MAX_DAY_TRADES_PER_5_SESSIONS,
+  SHADOW_SLIPPAGE_PCT_PER_SIDE,
+} from '../config.js';
 import { pool } from '../db/pool.js';
 import { getClock, getLatestTradePrice, submitOrder } from '../services/alpaca.js';
 import { callClaude } from '../services/claude.js';
@@ -54,6 +58,19 @@ const RESERVE_CONVICTION_CALL_SQL = `
   ON CONFLICT (day) DO UPDATE SET calls = claude_call_budget.calls + 1
     WHERE claude_call_budget.calls < $1
   RETURNING calls
+`;
+
+const OPEN_SHADOW_KEYS_SQL = "SELECT strategy_id, symbol FROM shadow_trades WHERE status = 'open'";
+
+const INSERT_SHADOW_SQL = `
+  INSERT INTO shadow_trades (strategy_id, symbol, entry_signal_id, blocked_by, qty, entry_price, entry_ts,
+                             slippage_pct_per_side, status)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open') RETURNING id
+`;
+
+const RECORD_SHADOW_DROPS_SQL = `
+  UPDATE claude_call_budget SET shadow_drops = shadow_drops + $1
+  WHERE day = (now() AT TIME ZONE 'America/New_York')::date
 `;
 
 const DAY_TRADES_SQL = `
@@ -139,6 +156,80 @@ async function convictionFor(strategyName, bag) {
   return { conviction, reasoning: verdict.reasoning, budgetExceeded: false };
 }
 
+async function recordShadowEntries(refused, ts, prices, shadowKeys) {
+  let recorded = 0;
+  let capDropped = 0;
+  let unusable = 0;
+  let duplicate = 0;
+  let belowConviction = 0;
+
+  for (const { strategy, symbol, bag, conditions, blockedBy, refusal } of refused) {
+    const key = `${strategy.id}:${symbol}`;
+    if (shadowKeys.has(key)) {
+      duplicate += 1;
+      continue;
+    }
+
+    const verdict = await convictionFor(strategy.name, bag);
+
+    if (verdict.budgetExceeded) {
+      capDropped += 1;
+      console.warn(
+        `[strategyRunner] shadow DROPPED ${strategy.name} ${symbol}: the shared daily cap of ${MAX_CONVICTION_CALLS_PER_DAY} conviction calls is spent, and a shadow entry is never recorded with conviction NULL (${refusal})`
+      );
+      continue;
+    }
+
+    if (verdict.conviction === null) {
+      unusable += 1;
+      console.warn(
+        `[strategyRunner] shadow DROPPED ${strategy.name} ${symbol}: Claude returned no usable conviction, and a shadow entry is never recorded with conviction NULL (${refusal})`
+      );
+      continue;
+    }
+
+    const inserted = await pool.query(
+      `INSERT INTO signals (strategy_id, symbol, ts, direction, conviction, reasoning, feature_snapshot)
+       VALUES ($1, $2, $3, 'entry', $4, $5, $6) RETURNING id`,
+      [strategy.id, symbol, ts, verdict.conviction, verdict.reasoning ?? conditions, bag]
+    );
+
+    if (verdict.conviction < MIN_CONVICTION) {
+      belowConviction += 1;
+      console.log(
+        `[strategyRunner] shadow ${strategy.name} ${symbol}: signal ${inserted.rows[0].id} logged, conviction ${verdict.conviction} below ${MIN_CONVICTION}, no shadow entry (${refusal})`
+      );
+      continue;
+    }
+
+    const isShort = strategy.params.side === 'short';
+    const signalPrice = prices.get(symbol);
+    const qty = Math.floor(NOTIONAL_USD / signalPrice);
+    const entryPrice = signalPrice * (1 + (isShort ? -SHADOW_SLIPPAGE_PCT_PER_SIDE : SHADOW_SLIPPAGE_PCT_PER_SIDE) / 100);
+
+    const shadow = await pool.query(INSERT_SHADOW_SQL, [
+      strategy.id,
+      symbol,
+      inserted.rows[0].id,
+      blockedBy,
+      qty,
+      entryPrice,
+      ts,
+      SHADOW_SLIPPAGE_PCT_PER_SIDE,
+    ]);
+
+    shadowKeys.add(key);
+    recorded += 1;
+    console.log(
+      `[strategyRunner] shadow entry ${shadow.rows[0].id}: ${strategy.name} ${isShort ? 'sell' : 'buy'} ${qty} ${symbol} @ ${entryPrice.toFixed(4)} (signal ${signalPrice}, ${SHADOW_SLIPPAGE_PCT_PER_SIDE}% adverse), no order placed — ${refusal} (${conditions}, conviction ${verdict.conviction})`
+    );
+  }
+
+  if (capDropped > 0) await pool.query(RECORD_SHADOW_DROPS_SQL, [capDropped]);
+
+  return { recorded, capDropped, unusable, duplicate, belowConviction };
+}
+
 export async function strategyRunner() {
   const ts = new Date();
 
@@ -159,18 +250,14 @@ export async function strategyRunner() {
   }
 
   const { used, reserved } = dayTrades.rows[0];
-  let dayTradeBudget = MAX_DAY_TRADES_PER_5_SESSIONS - used - reserved;
-  if (dayTradeBudget <= 0) {
-    console.log(
-      `[strategyRunner] PDT guard: ${used} day-trades used and ${reserved} reserved by positions opened this session, no entries`
-    );
-    return;
-  }
+  const openingBudget = MAX_DAY_TRADES_PER_5_SESSIONS - used - reserved;
+  let dayTradeBudget = openingBudget;
 
-  const [eligible, features, open] = await Promise.all([
+  const [eligible, features, open, shadowOpen] = await Promise.all([
     pool.query(ELIGIBLE_SQL, [MIN_PRICE, MAX_PRICE, MIN_AVG_VOLUME_30D, ALLOWED_EXCHANGES]),
     pool.query('SELECT DISTINCT ON (symbol) * FROM features ORDER BY symbol, ts DESC'),
     pool.query("SELECT strategy_id, symbol FROM trades WHERE status = 'open'"),
+    pool.query(OPEN_SHADOW_KEYS_SQL),
   ]);
 
   const prices = new Map(eligible.rows.map((row) => [row.symbol, Number(row.price)]));
@@ -181,18 +268,15 @@ export async function strategyRunner() {
     openCounts.set(row.strategy_id, (openCounts.get(row.strategy_id) ?? 0) + 1);
     openKeys.add(`${row.strategy_id}:${row.symbol}`);
   }
+  const shadowKeys = new Set(shadowOpen.rows.map((row) => `${row.strategy_id}:${row.symbol}`));
 
   console.log(
     `[strategyRunner] ${strategies.rows.length} active strategies, ${prices.size} eligible tickers, ${open.rows.length} open trades, day-trade budget ${dayTradeBudget} (${used} used, ${reserved} reserved)`
   );
 
-  let placed = 0;
+  const candidates = [];
   for (const strategy of strategies.rows) {
-    let openForStrategy = openCounts.get(strategy.id) ?? 0;
-
     for (const symbol of prices.keys()) {
-      if (dayTradeBudget <= 0) break;
-      if (openForStrategy >= MAX_OPEN_TRADES_PER_STRATEGY) break;
       if (openKeys.has(`${strategy.id}:${symbol}`)) continue;
 
       const featureRow = featuresBySymbol.get(symbol);
@@ -202,62 +286,94 @@ export async function strategyRunner() {
       const signal = evaluate(strategy.params, bag);
       if (!signal) continue;
 
-      const lastPrice = await getLatestTradePrice(symbol);
-      if (!Number.isFinite(lastPrice) || lastPrice <= 0) {
-        console.warn(`[strategyRunner] ${symbol}: no last trade price from Alpaca, cannot size the order, skipping`);
-        continue;
-      }
-
-      const qty = Math.floor(NOTIONAL_USD / lastPrice);
-      if (qty < 1) continue;
-
-      const conditions = signal.conditions_met
-        .map((condition) => `${condition.feature} ${condition.op} ${condition.value}`)
-        .join(' AND ');
-
-      const verdict = await convictionFor(strategy.name, bag);
-
-      const inserted = await pool.query(
-        `INSERT INTO signals (strategy_id, symbol, ts, direction, conviction, reasoning, feature_snapshot)
-         VALUES ($1, $2, $3, 'entry', $4, $5, $6) RETURNING id`,
-        [strategy.id, symbol, ts, verdict.conviction, verdict.reasoning ?? conditions, bag]
-      );
-
-      if (verdict.budgetExceeded) {
-        console.warn(
-          `[strategyRunner] ${strategy.name} ${symbol}: signal ${inserted.rows[0].id} logged with conviction NULL, trade skipped (${conditions})`
-        );
-        continue;
-      }
-
-      if (verdict.conviction !== null && verdict.conviction < MIN_CONVICTION) {
-        console.log(
-          `[strategyRunner] ${strategy.name} ${symbol}: signal ${inserted.rows[0].id} logged, conviction ${verdict.conviction} below ${MIN_CONVICTION}, trade skipped (${conditions})`
-        );
-        continue;
-      }
-
-      const trade = await pool.query(
-        `INSERT INTO trades (strategy_id, symbol, entry_signal_id, qty, entry_ts, status)
-         VALUES ($1, $2, $3, $4, $5, 'open') RETURNING id`,
-        [strategy.id, symbol, inserted.rows[0].id, qty, ts]
-      );
-      const tradeId = trade.rows[0].id;
-
-      const side = strategy.params.side === 'short' ? 'sell' : 'buy';
-      const order = await submitOrder({ symbol, qty, side, clientOrderId: `pulse-entry-${tradeId}` });
-      await pool.query('UPDATE trades SET alpaca_order_id = $1 WHERE id = $2', [order.id, tradeId]);
-
-      openForStrategy += 1;
-      dayTradeBudget -= 1;
-      placed += 1;
-      console.log(
-        `[strategyRunner] ${strategy.name} entry ${side} ${qty} ${symbol} @ ~${lastPrice} = $${(qty * lastPrice).toFixed(2)} (${conditions}, conviction ${verdict.conviction})`
-      );
+      candidates.push({
+        strategy,
+        symbol,
+        bag,
+        conditions: signal.conditions_met
+          .map((condition) => `${condition.feature} ${condition.op} ${condition.value}`)
+          .join(' AND '),
+      });
     }
-
-    if (dayTradeBudget <= 0) break;
   }
 
-  console.log(`[strategyRunner] ${placed} entry signals placed`);
+  const refused = [];
+  let placed = 0;
+  for (const candidate of candidates) {
+    const { strategy, symbol, bag, conditions } = candidate;
+    const openForStrategy = openCounts.get(strategy.id) ?? 0;
+
+    if (dayTradeBudget <= 0) {
+      refused.push({
+        ...candidate,
+        blockedBy: 'pdt_budget',
+        refusal: `PDT guard: ${MAX_DAY_TRADES_PER_5_SESSIONS} - ${used} used - ${reserved} reserved = ${openingBudget}, ${placed} placed this tick, no day-trade budget left`,
+      });
+      continue;
+    }
+
+    if (openForStrategy >= MAX_OPEN_TRADES_PER_STRATEGY) {
+      refused.push({
+        ...candidate,
+        blockedBy: 'max_concurrent',
+        refusal: `max-concurrent guard: ${strategy.name} holds ${openForStrategy} of ${MAX_OPEN_TRADES_PER_STRATEGY} open trades`,
+      });
+      continue;
+    }
+
+    const lastPrice = await getLatestTradePrice(symbol);
+    if (!Number.isFinite(lastPrice) || lastPrice <= 0) {
+      console.warn(`[strategyRunner] ${symbol}: no last trade price from Alpaca, cannot size the order, skipping`);
+      continue;
+    }
+
+    const qty = Math.floor(NOTIONAL_USD / lastPrice);
+    if (qty < 1) continue;
+
+    const verdict = await convictionFor(strategy.name, bag);
+
+    const inserted = await pool.query(
+      `INSERT INTO signals (strategy_id, symbol, ts, direction, conviction, reasoning, feature_snapshot)
+       VALUES ($1, $2, $3, 'entry', $4, $5, $6) RETURNING id`,
+      [strategy.id, symbol, ts, verdict.conviction, verdict.reasoning ?? conditions, bag]
+    );
+
+    if (verdict.budgetExceeded) {
+      console.warn(
+        `[strategyRunner] ${strategy.name} ${symbol}: signal ${inserted.rows[0].id} logged with conviction NULL, trade skipped (${conditions})`
+      );
+      continue;
+    }
+
+    if (verdict.conviction !== null && verdict.conviction < MIN_CONVICTION) {
+      console.log(
+        `[strategyRunner] ${strategy.name} ${symbol}: signal ${inserted.rows[0].id} logged, conviction ${verdict.conviction} below ${MIN_CONVICTION}, trade skipped (${conditions})`
+      );
+      continue;
+    }
+
+    const trade = await pool.query(
+      `INSERT INTO trades (strategy_id, symbol, entry_signal_id, qty, entry_ts, status)
+       VALUES ($1, $2, $3, $4, $5, 'open') RETURNING id`,
+      [strategy.id, symbol, inserted.rows[0].id, qty, ts]
+    );
+    const tradeId = trade.rows[0].id;
+
+    const side = strategy.params.side === 'short' ? 'sell' : 'buy';
+    const order = await submitOrder({ symbol, qty, side, clientOrderId: `pulse-entry-${tradeId}` });
+    await pool.query('UPDATE trades SET alpaca_order_id = $1 WHERE id = $2', [order.id, tradeId]);
+
+    openCounts.set(strategy.id, openForStrategy + 1);
+    dayTradeBudget -= 1;
+    placed += 1;
+    console.log(
+      `[strategyRunner] ${strategy.name} entry ${side} ${qty} ${symbol} @ ~${lastPrice} = $${(qty * lastPrice).toFixed(2)} (${conditions}, conviction ${verdict.conviction})`
+    );
+  }
+
+  const shadow = await recordShadowEntries(refused, ts, prices, shadowKeys);
+
+  console.log(
+    `[strategyRunner] ${candidates.length} entry signals fired, ${placed} placed, ${refused.length} refused by a budget guard → ${shadow.recorded} shadow entries recorded (${shadow.duplicate} already shadowed, ${shadow.belowConviction} below conviction, ${shadow.capDropped} dropped on the conviction cap, ${shadow.unusable} dropped with no usable conviction)`
+  );
 }

@@ -10,6 +10,7 @@ import { featureEngine } from './workers/featureEngine.js';
 import { marketIngest } from './workers/marketIngest.js';
 import { positionTracker } from './workers/positionTracker.js';
 import { redditIngest } from './workers/redditIngest.js';
+import { shadowTracker } from './workers/shadowTracker.js';
 import { stocktwitsIngest } from './workers/stocktwitsIngest.js';
 import { statsRollup } from './workers/statsRollup.js';
 import { strategyRunner } from './workers/strategyRunner.js';
@@ -115,6 +116,7 @@ async function runPipeline(forceMarket) {
   await featureEngine();
   await strategyRunner();
   await positionTracker();
+  await shadowTracker();
   console.log(`[pipeline] tick finished in ${Date.now() - startedAt}ms`);
 }
 
