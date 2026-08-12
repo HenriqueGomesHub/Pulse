@@ -46,7 +46,7 @@ function isMet(condition, features) {
   return operator(value, condition.value);
 }
 
-function blockConditions(block) {
+export function blockConditions(block) {
   const conditions = block?.all ?? block?.any;
   if (!Array.isArray(conditions) || conditions.length === 0) {
     throw new Error('engine: condition block must be { all: [...] } or { any: [...] } with at least one condition');

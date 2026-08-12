@@ -285,7 +285,55 @@ features dies.
 
 **Precedence requires sustained presence.** Reddit becomes primary only after sustained
 successful ingestion, not on a single row, and demotes symmetrically — one transient HTTP 200
-would otherwise have blacked out the mention pipeline for seven days.
+would otherwise have blacked out the mention pipeline for seven days. Implemented as **N = 20 =
+`MENTION_BASELINE_MIN_OBS`**, derived rather than chosen: a source may displace another only once
+it can produce the `mention_zscore` that displacing is *for*. The precedence window and the
+z-score window are now the same exported constant and cannot disagree.
+
+### Fix cycle 2 — two HIGHs found after cycle 1 shipped
+
+An anti-slop audit reported after cycle 1 was already committed. Two defects that change runtime
+outcomes:
+
+**The completeness guard was backwards for a growing ranking.** It asserted
+`results.length !== count`, but the ranking is live and read over ~10 sequential requests — a
+ticker entering mid-fetch makes the collected total *exceed* `count` and the guard killed the
+whole tick. The investigation's own measurements showed the ranking moving (948, 948, 945).
+Now a shortfall of **a whole page or more** aborts; over-count is treated as churn. Verified:
+growth (303 of 300) writes 20 rows where `04b0812` wrote 0; shortfall of a page and an empty
+page 1 still write nothing.
+
+`MAX_BACKOFF_MS` was also deleted — it silently converted a server's `Retry-After: 60` into 5
+seconds while `RETRY_BUDGET_MS` already bounded the total, so it disobeyed the rate limiter
+and bought nothing.
+
+**Firability did not gate evolution's promotion.** `canFireUnder` ran only in the pipeline
+reconciler. Because `replay()` scores candidates against 30 days of history in which the *other*
+source's columns still held data, an unfirable candidate could win, trigger `swap()` — retiring a
+working strategy in the same transaction — and then be demoted back to `candidate` on the next
+tick. **Net loss of one active strategy, permanently**, which is exactly the shrinkage the
+swap-semantics ruling exists to prevent; cycle 1 made this worse than before. Now gated at the
+promotion loop, modelled on the short-side restriction: skipped without consuming the
+retirement, so the retirement stays available to a candidate that can fire. Demonstrated —
+`04b0812` ends the cycle with 3 active and one unfirable; the fix ends with 4 active, all firable.
+
+### A conflict between two ratified rulings — firability wins, loudly
+
+The reconciler enforced the cap of 6 but ignored the floor of 3, so demotions could breach it.
+**§5.2 (never active while unable to fire) and §6.2 (never below 3 active) cannot both always
+hold.**
+
+**Decision: §5.2 wins; the floor yields and the breach is logged loudly.** The floor exists to
+stop the *evolution loop* retiring strategies that work, because retirement is permanent and
+there is no un-retire path. A strategy that cannot fire is not one that works, and holding it
+active buys a number that lies — a number that feeds `active.length`, the retirement permission
+and the cap of 6, so a padded floor would let the loop retire a real strategy on the strength of
+a phantom. Demotion, unlike retirement, is reversible and reverses itself when the primary source
+changes back.
+
+`MIN_ACTIVE_STRATEGIES` and `MAX_ACTIVE_STRATEGIES` moved to `config.js` alongside the other
+ratified operating limits, so the cap is no longer exported from a worker purely to be
+re-enforced elsewhere.
 
 ---
 

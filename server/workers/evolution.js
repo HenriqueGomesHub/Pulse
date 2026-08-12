@@ -1,6 +1,9 @@
+import { MAX_ACTIVE_STRATEGIES, MIN_ACTIVE_STRATEGIES } from '../config.js';
 import { pool } from '../db/pool.js';
 import { callClaude } from '../services/claude.js';
+import { primaryMentionSource } from '../services/mentionSource.js';
 import { VOCABULARY, evaluate } from '../strategies/engine.js';
+import { canFireUnder } from '../strategies/seeds.js';
 import { statsRollup } from './statsRollup.js';
 
 const EVOLUTION_MODEL = 'claude-sonnet-4-6';
@@ -8,8 +11,6 @@ const EVOLUTION_MAX_TOKENS = 2000;
 const PROPOSALS = 4;
 const MIN_CLOSED_TRADES = 10;
 const MIN_QUALIFIERS = 2;
-const MIN_ACTIVE_STRATEGIES = 3;
-export const MAX_ACTIVE_STRATEGIES = 6;
 const HOLDOUT_DAYS = 30;
 const RECENCY_WEIGHT_7D = 2;
 
@@ -584,6 +585,7 @@ export async function evolution() {
     return;
   }
 
+  const mentionSource = await primaryMentionSource();
   let activeCount = active.length;
   let retirementPending = retirementAllowed;
   let replacement = null;
@@ -605,6 +607,12 @@ export async function evolution() {
     if (candidate.params.side === 'short') {
       console.warn(
         `[evolution] ${candidate.name} (id ${candidate.id}) beat ${worst.name}'s ${baseline.expectancy.toFixed(4)} with holdout expectancy ${candidate.result.expectancy.toFixed(4)} but is NOT promoted: it is a short, and a short reaches live trading only when a human activates it. It stays a candidate, where seed #4 fade-the-peak also sits — there is no borrow check anywhere, a rejected short sell throws out of strategyRunner's loop and kills the rest of that tick, and the short path has never executed against the live broker. Because it is not promoted it takes nobody's place, so it does NOT retire ${worst.name}${retirementPending ? ', whose retirement stays available to a long candidate in this cycle' : ''}.`
+      );
+      continue;
+    }
+    if (!canFireUnder(mentionSource, candidate.params)) {
+      console.warn(
+        `[evolution] ${candidate.name} (id ${candidate.id}) beat ${worst.name}'s ${baseline.expectancy.toFixed(4)} with holdout expectancy ${candidate.result.expectancy.toFixed(4)} but is NOT promoted: its entry block gates on a mention feature that is NULL while ${mentionSource} is the primary mention source, so it is structurally unable to fire and would be demoted back to candidate on the next tick. The replay scored it against historical feature rows written while the other source was primary, which is where the score came from. Because it is not promoted it takes nobody's place, so it does NOT retire ${worst.name}${retirementPending ? ', whose retirement stays available to a candidate that can fire' : ''}.`
       );
       continue;
     }

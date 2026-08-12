@@ -1,3 +1,9 @@
+import { blockConditions, evaluate } from './engine.js';
+
+const ALWAYS_MET = Object.freeze({ feature: 'hold_hours', op: 'gte', value: 0 });
+
+const ALWAYS_MET_FEATURES = Object.freeze({ in_position: false, hold_hours: 0 });
+
 const SUBSTANCE_GATES = {
   reddit: [
     { feature: 'mentions_1h', op: 'gte', value: 5 },
@@ -15,9 +21,11 @@ export function canFireUnder(primaryMentionSource, params) {
       .filter(([source]) => source !== primaryMentionSource)
       .flatMap(([, gates]) => gates.map((gate) => gate.feature))
   );
-  const conditions = params.entry.all ?? params.entry.any;
-  const satisfiable = conditions.filter((condition) => !unavailable.has(condition.feature));
-  return params.entry.all ? satisfiable.length === conditions.length : satisfiable.length > 0;
+  const probe = blockConditions(params.entry).map((condition) =>
+    unavailable.has(condition.feature) ? condition : ALWAYS_MET
+  );
+  const entry = params.entry.all ? { all: probe } : { any: probe };
+  return evaluate({ entry }, ALWAYS_MET_FEATURES) !== null;
 }
 
 export function seedsFor(primaryMentionSource) {

@@ -1,11 +1,11 @@
 import express from 'express';
 import cron from 'node-cron';
-import { PORT, WATCHLIST } from './config.js';
+import { MAX_ACTIVE_STRATEGIES, MIN_ACTIVE_STRATEGIES, PORT, WATCHLIST } from './config.js';
 import { pool } from './db/pool.js';
 import { dashboardRoutes } from './routes/dashboard.js';
 import { primaryMentionSource } from './services/mentionSource.js';
 import { apewisdomIngest } from './workers/apewisdomIngest.js';
-import { MAX_ACTIVE_STRATEGIES, evolution } from './workers/evolution.js';
+import { evolution } from './workers/evolution.js';
 import { featureEngine } from './workers/featureEngine.js';
 import { marketIngest } from './workers/marketIngest.js';
 import { positionTracker } from './workers/positionTracker.js';
@@ -54,6 +54,7 @@ function inMarketWindow(now) {
 async function reconcileFirability(source) {
   const { rows } = await pool.query(FIRABILITY_SQL);
   let active = rows.filter((row) => row.status === 'active').length;
+  let demoted = 0;
 
   for (const row of rows) {
     const firable = canFireUnder(source, row.params);
@@ -61,6 +62,7 @@ async function reconcileFirability(source) {
     if (row.status === 'active' && !firable) {
       await pool.query("UPDATE strategies SET status = 'candidate' WHERE id = $1 AND status = 'active'", [row.id]);
       active -= 1;
+      demoted += 1;
       console.warn(
         `[pulse] "${row.name}" (id ${row.id}) demoted active → candidate: its entry block gates on a mention feature that is NULL while ${source} is the primary mention source, so it is structurally unable to fire`
       );
@@ -71,6 +73,12 @@ async function reconcileFirability(source) {
         `[pulse] "${row.name}" (id ${row.id}) restored candidate → active: the evolution loop promoted it and never retired it, and its entry block can fire again under ${source}`
       );
     }
+  }
+
+  if (active < MIN_ACTIVE_STRATEGIES) {
+    console.warn(
+      `[pulse] FLOOR BREACHED: ${active} active strategies, below the floor of ${MIN_ACTIVE_STRATEGIES}, with ${demoted} demoted on this tick for being unable to fire under ${source}. Spec §5.2 wins over the §6.2 floor here: the floor exists to stop the evolution loop retiring strategies that work, and a strategy that cannot fire is not one of those — held active it would inflate the active count and the evolution cap with a strategy that can never open a position. A demotion is reversible and reverses itself when the primary mention source changes back; a retirement never does.`
+    );
   }
 }
 
