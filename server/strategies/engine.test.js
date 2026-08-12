@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { VOCABULARY, evaluate } from './engine.js';
-import { SEEDS } from './seeds.js';
+import { seedsFor } from './seeds.js';
 
-const socialBreakout = SEEDS.find((seed) => seed.name === 'social-breakout').params;
+const MENTION_SOURCES = ['reddit', 'apewisdom'];
+const seedNamed = (source, name) => seedsFor(source).find((seed) => seed.name === name).params;
+const socialBreakout = seedNamed('reddit', 'social-breakout');
 
 const NO_FEATURES = {
   social_velocity: null,
@@ -12,6 +14,8 @@ const NO_FEATURES = {
   mention_zscore: null,
   mentions_1h: null,
   unique_authors_1h: null,
+  mentions_24h: null,
+  mention_growth_24h: null,
   rel_volume_zscore: null,
   price_momentum: null,
   exhaustion_score: null,
@@ -182,10 +186,43 @@ test('VOCABULARY is exactly the set evaluate accepts, so callers cannot advertis
 });
 
 test('every seed strategy is expressible in the vocabulary, entry block and exit block alike', () => {
-  for (const seed of SEEDS) {
-    assert.doesNotThrow(() => evaluate(seed.params, { in_position: false }), seed.name);
-    assert.doesNotThrow(() => evaluate(seed.params, { in_position: true }), seed.name);
+  for (const source of MENTION_SOURCES) {
+    for (const seed of seedsFor(source)) {
+      assert.doesNotThrow(() => evaluate(seed.params, { in_position: false }), `${source}/${seed.name}`);
+      assert.doesNotThrow(() => evaluate(seed.params, { in_position: true }), `${source}/${seed.name}`);
+    }
   }
+});
+
+test('seed #1 swaps its absolute-substance gates with the primary mention source, and nothing else', () => {
+  const apewisdom = seedNamed('apewisdom', 'social-breakout');
+  const shared = ['mention_zscore', 'social_accel', 'rel_volume_zscore'];
+
+  assert.deepEqual(socialBreakout.entry.all.map((c) => c.feature), [...shared, 'mentions_1h', 'unique_authors_1h']);
+  assert.deepEqual(apewisdom.entry.all.map((c) => c.feature), [...shared, 'mentions_24h', 'mention_growth_24h']);
+  assert.deepEqual(apewisdom.exit, socialBreakout.exit);
+  assert.equal(apewisdom.side, socialBreakout.side);
+
+  for (const name of ['squeeze-setup', 'quiet-accumulation', 'fade-the-peak']) {
+    assert.deepEqual(seedNamed('apewisdom', name), seedNamed('reddit', name), name);
+  }
+});
+
+test('seed #1 under apewisdom requires 24h volume AND growth, and cannot be satisfied by the reddit gates', () => {
+  const apewisdom = seedNamed('apewisdom', 'social-breakout');
+  const base = { ...NO_FEATURES, in_position: false, mention_zscore: 3.4, social_accel: 0.2, rel_volume_zscore: 2.5 };
+
+  assert.equal(evaluate(apewisdom, { ...base, mentions_24h: 25, mention_growth_24h: 1 }).direction, 'entry');
+  assert.equal(evaluate(apewisdom, { ...base, mentions_24h: 24, mention_growth_24h: 1 }), null);
+  assert.equal(evaluate(apewisdom, { ...base, mentions_24h: 80, mention_growth_24h: 0 }), null);
+  assert.equal(evaluate(apewisdom, { ...base, mentions_24h: 80, mention_growth_24h: -1 }), null);
+  assert.equal(evaluate(apewisdom, { ...base, mentions_24h: 80, mentions_1h: 9, unique_authors_1h: 6 }), null);
+  assert.equal(evaluate(socialBreakout, { ...base, mentions_24h: 80, mention_growth_24h: 5 }), null);
+});
+
+test('a source that is excluded from mention counts has no seed variant at all', () => {
+  assert.throws(() => seedsFor('stocktwits'), /absolute-substance gates/);
+  assert.throws(() => seedsFor(undefined), /absolute-substance gates/);
 });
 
 test('evaluate is pure: it does not mutate its arguments', () => {

@@ -1,4 +1,5 @@
 import { pool } from '../db/pool.js';
+import { MENTION_BASELINE_INTERVAL, primaryMentionSource } from '../services/mentionSource.js';
 
 const MIN_OBS_REL_VOLUME_30D = 20;
 const MIN_OBS_MENTIONS_7D = 20;
@@ -32,40 +33,49 @@ const MARKET_SQL = `
   WHERE r.rn = 1
 `;
 
-const SOCIAL_SQL = `
-  WITH per_tick AS (
+const MENTION_SQL = `
+  WITH baseline AS (
     SELECT symbol, ts,
-           sum(mentions_1h)::numeric AS mentions,
-           sum(unique_authors_1h)::numeric AS authors,
-           avg(bull_ratio) AS bull_ratio
+           (CASE WHEN $1 = 'apewisdom' THEN mentions_24h ELSE mentions_1h END)::numeric AS mentions,
+           mentions_1h, unique_authors_1h, mentions_24h, upvotes_24h,
+           (raw->>'mentions_24h_ago')::numeric AS mentions_24h_ago
     FROM social_snapshots
-    WHERE ts > now() - interval '7 days'
-    GROUP BY symbol, ts
+    WHERE source = $1 AND ts > now() - interval '${MENTION_BASELINE_INTERVAL}'
   ),
   ranked AS (
-    SELECT symbol, ts, mentions, authors, bull_ratio,
-           lag(bull_ratio) OVER (PARTITION BY symbol ORDER BY ts) AS prev_bull_ratio,
-           row_number() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
-    FROM per_tick
+    SELECT *, row_number() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
+    FROM baseline
   ),
   week AS (
     SELECT symbol, count(mentions) AS n, avg(mentions) AS mean, stddev_samp(mentions) AS sd
-    FROM per_tick
+    FROM baseline
     GROUP BY symbol
   ),
   day AS (
     SELECT symbol, count(mentions) AS n, avg(mentions) AS mean, stddev_samp(mentions) AS sd
-    FROM per_tick
+    FROM baseline
     WHERE ts > now() - interval '24 hours'
     GROUP BY symbol
   )
-  SELECT r.symbol, r.mentions, r.authors, r.bull_ratio, r.prev_bull_ratio,
+  SELECT r.symbol, r.mentions, r.mentions_1h, r.unique_authors_1h,
+         r.mentions_24h, r.upvotes_24h, r.mentions_24h_ago,
          w.n AS week_n, w.mean AS week_mean, w.sd AS week_sd,
          d.n AS day_n, d.mean AS day_mean, d.sd AS day_sd
   FROM ranked r
   JOIN week w USING (symbol)
   LEFT JOIN day d USING (symbol)
   WHERE r.rn = 1
+`;
+
+const BULL_RATIO_SQL = `
+  WITH ranked AS (
+    SELECT symbol, bull_ratio,
+           lag(bull_ratio) OVER (PARTITION BY symbol ORDER BY ts) AS prev_bull_ratio,
+           row_number() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
+    FROM social_snapshots
+    WHERE source = 'stocktwits' AND ts > now() - interval '${MENTION_BASELINE_INTERVAL}'
+  )
+  SELECT symbol, bull_ratio, prev_bull_ratio FROM ranked WHERE rn = 1
 `;
 
 function num(value) {
@@ -93,15 +103,18 @@ function exhaustionScore(inputs) {
 
 export async function featureEngine() {
   const ts = new Date();
-  const [tickers, market, social, previous] = await Promise.all([
+  const primarySource = await primaryMentionSource();
+  const [tickers, market, social, bull, previous] = await Promise.all([
     pool.query('SELECT symbol, days_to_cover FROM tickers ORDER BY symbol'),
     pool.query(MARKET_SQL),
-    pool.query(SOCIAL_SQL),
+    pool.query(MENTION_SQL, [primarySource]),
+    pool.query(BULL_RATIO_SQL),
     pool.query('SELECT DISTINCT ON (symbol) symbol, social_velocity FROM features ORDER BY symbol, ts DESC'),
   ]);
 
   const marketBySymbol = new Map(market.rows.map((row) => [row.symbol, row]));
   const socialBySymbol = new Map(social.rows.map((row) => [row.symbol, row]));
+  const bullBySymbol = new Map(bull.rows.map((row) => [row.symbol, row]));
   const previousVelocity = new Map(previous.rows.map((row) => [row.symbol, num(row.social_velocity)]));
 
   const values = [];
@@ -110,6 +123,7 @@ export async function featureEngine() {
   for (const { symbol, days_to_cover: daysToCover } of tickers.rows) {
     const m = marketBySymbol.get(symbol);
     const s = socialBySymbol.get(symbol);
+    const b = bullBySymbol.get(symbol);
 
     const relVolume = m ? num(m.rel_volume) : null;
     const prevRelVolume = m ? num(m.prev_rel_volume) : null;
@@ -121,9 +135,15 @@ export async function featureEngine() {
       : null;
 
     const mentions = s ? num(s.mentions) : null;
-    const authors = s ? num(s.authors) : null;
-    const bullRatio = s ? num(s.bull_ratio) : null;
-    const prevBullRatio = s ? num(s.prev_bull_ratio) : null;
+    const authors = s ? num(s.unique_authors_1h) : null;
+    const mentions1h = s ? num(s.mentions_1h) : null;
+    const mentions24h = s ? num(s.mentions_24h) : null;
+    const upvotes24h = s ? num(s.upvotes_24h) : null;
+    const mentions24hAgo = s ? num(s.mentions_24h_ago) : null;
+    const mentionGrowth24h =
+      mentions24h === null || mentions24hAgo === null ? null : mentions24h - mentions24hAgo;
+    const bullRatio = b ? num(b.bull_ratio) : null;
+    const prevBullRatio = b ? num(b.prev_bull_ratio) : null;
 
     const socialVelocity = s
       ? zscore(mentions, num(s.day_mean), num(s.day_sd), num(s.day_n), MIN_OBS_MENTIONS_24H)
@@ -149,11 +169,14 @@ export async function featureEngine() {
       relVolumeZscore,
       priceMomentum,
       exhaustionScore({ socialAccel, priceMomentum, bullRatio, prevBullRatio, relVolume, prevRelVolume }),
-      mentions,
+      mentions1h,
       authors,
       num(daysToCover),
       priceMomentum1d,
       priceMomentum2d,
+      mentions24h,
+      upvotes24h,
+      mentionGrowth24h,
     ];
     values.push(`(${row.map((_, index) => `$${params.length + index + 1}`).join(', ')})`);
     params.push(...row);
@@ -165,9 +188,9 @@ export async function featureEngine() {
   }
 
   await pool.query(
-    `INSERT INTO features (symbol, ts, social_velocity, social_accel, author_quality, mention_zscore, rel_volume_zscore, price_momentum, exhaustion_score, mentions_1h, unique_authors_1h, days_to_cover, price_momentum_1d, price_momentum_2d)
+    `INSERT INTO features (symbol, ts, social_velocity, social_accel, author_quality, mention_zscore, rel_volume_zscore, price_momentum, exhaustion_score, mentions_1h, unique_authors_1h, days_to_cover, price_momentum_1d, price_momentum_2d, mentions_24h, upvotes_24h, mention_growth_24h)
      VALUES ${values.join(', ')}`,
     params
   );
-  console.log(`[featureEngine] inserted ${values.length} rows`);
+  console.log(`[featureEngine] inserted ${values.length} rows, mentions from source ${primarySource}`);
 }

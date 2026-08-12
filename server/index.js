@@ -3,6 +3,8 @@ import cron from 'node-cron';
 import { PORT, WATCHLIST } from './config.js';
 import { pool } from './db/pool.js';
 import { dashboardRoutes } from './routes/dashboard.js';
+import { primaryMentionSource } from './services/mentionSource.js';
+import { apewisdomIngest } from './workers/apewisdomIngest.js';
 import { evolution } from './workers/evolution.js';
 import { featureEngine } from './workers/featureEngine.js';
 import { marketIngest } from './workers/marketIngest.js';
@@ -12,7 +14,7 @@ import { stocktwitsIngest } from './workers/stocktwitsIngest.js';
 import { statsRollup } from './workers/statsRollup.js';
 import { strategyRunner } from './workers/strategyRunner.js';
 import { tickerMetaRefresh } from './workers/tickerMetaRefresh.js';
-import { SEEDS } from './strategies/seeds.js';
+import { seedsFor } from './strategies/seeds.js';
 
 const WINDOW_OPEN_MINUTES = 7 * 60 + 30;
 const WINDOW_CLOSE_MINUTES = 18 * 60;
@@ -41,7 +43,7 @@ async function runPipeline(forceMarket) {
     [WATCHLIST]
   );
 
-  for (const seed of SEEDS) {
+  for (const seed of seedsFor(await primaryMentionSource())) {
     await pool.query(
       'UPDATE strategies SET params = $3 WHERE name = $1 AND generation = $2',
       [seed.name, seed.generation, seed.params]
@@ -54,7 +56,7 @@ async function runPipeline(forceMarket) {
     );
   }
 
-  const tasks = [redditIngest(), stocktwitsIngest()];
+  const tasks = [redditIngest(), stocktwitsIngest(), apewisdomIngest()];
   if (forceMarket || inMarketWindow(new Date())) {
     tasks.push(marketIngest());
   } else {

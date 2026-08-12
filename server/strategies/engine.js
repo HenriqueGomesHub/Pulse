@@ -5,6 +5,8 @@ const FEATURES = new Set([
   'mention_zscore',
   'mentions_1h',
   'unique_authors_1h',
+  'mentions_24h',
+  'mention_growth_24h',
   'rel_volume_zscore',
   'price_momentum',
   'price_momentum_1d',

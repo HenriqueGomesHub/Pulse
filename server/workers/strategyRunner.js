@@ -103,6 +103,8 @@ function featureBag(row) {
     mention_zscore: row.mention_zscore === null ? null : Number(row.mention_zscore),
     mentions_1h: row.mentions_1h === null ? null : Number(row.mentions_1h),
     unique_authors_1h: row.unique_authors_1h === null ? null : Number(row.unique_authors_1h),
+    mentions_24h: row.mentions_24h === null ? null : Number(row.mentions_24h),
+    mention_growth_24h: row.mention_growth_24h === null ? null : Number(row.mention_growth_24h),
     rel_volume_zscore: row.rel_volume_zscore === null ? null : Number(row.rel_volume_zscore),
     price_momentum: row.price_momentum === null ? null : Number(row.price_momentum),
     price_momentum_1d: row.price_momentum_1d === null ? null : Number(row.price_momentum_1d),

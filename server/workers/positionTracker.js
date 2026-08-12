@@ -66,6 +66,8 @@ function featureBag(row, pnlPct, holdHours) {
     mention_zscore: num(row?.mention_zscore),
     mentions_1h: num(row?.mentions_1h),
     unique_authors_1h: num(row?.unique_authors_1h),
+    mentions_24h: num(row?.mentions_24h),
+    mention_growth_24h: num(row?.mention_growth_24h),
     rel_volume_zscore: num(row?.rel_volume_zscore),
     price_momentum: num(row?.price_momentum),
     price_momentum_1d: num(row?.price_momentum_1d),

@@ -182,8 +182,58 @@ non-NULL `mention_zscore` appears **~100 minutes after the first apewisdom row**
 a z-score against a near-degenerate sample until roughly **7 days** of history exists. Seed #1
 cannot fire before the first of those, and should not be trusted before the second.
 
-**Nothing is implemented yet.** Awaiting a decision on the window handling and the precedence
-rule.
+### RULINGS — all ratified 2026-08-12, implementation proceeding
+
+**1. Window — semantic honesty (option c).** New columns `mentions_24h` and `upvotes_24h` on
+`social_snapshots` and `features`. **ApeWisdom rows never write `mentions_1h`**; that column
+keeps its 1-hour meaning and stays NULL under this source. No differencing, no reinterpretation.
+
+**2. Seed #1 gets a source-conditional entry gate.** While apewisdom is primary, the H4
+absolute-substance gates (`mentions_1h >= 5 AND unique_authors_1h >= 3`) are replaced by:
+
+```
+mentions_24h >= 25  AND  mentions_24h > mentions_24h_ago
+```
+
+The H4 gates exist to block single-post noise. On a 24-hour window the equivalent substance test
+is absolute volume **plus growth** — the window rising rather than aging out — and ApeWisdom's
+`mentions_24h_ago` field supplies growth for free.
+
+**The author gate is dropped under this source explicitly, not accidentally.**
+`unique_authors_1h` is unsatisfiable here — the aggregator does not expose author identity, so it
+is NULL forever. It returns automatically when Reddit-direct becomes primary.
+
+**25 is provisional.** The observation that motivated setting it materially above the H4 value:
+on the overnight snapshot taken during the investigation, **8 of 17 watchlist tickers cleared a
+`>= 5` bar** on a quiet tape — a threshold that would have been nearly free. **Review after two
+weeks of live distribution data.**
+
+**3. `mention_zscore`** — computed over `mentions_24h` while apewisdom is primary, single
+instrument per the precedence rule. On source switch the baseline restarts from zero, including
+the ~7-day quiet period that implies. Accepted.
+
+**4. Precedence — ratified exactly as proposed.** One primary mention source, `reddit` >
+`apewisdom`, applied across the whole baseline window, Stocktwits excluded from mentions and
+retained for `bull_ratio`. **This closes deferred finding H1 for mentions** — cross-source `ts`
+grouping can no longer pick a winner at random, because only one source is ever consulted.
+
+**5. Sequencing** — straight through: ingest, migration, source-aware `featureEngine`, seed #1's
+conditional gate, audit, gate. The 10-page fetch per cycle is acceptable (keyless and cheap),
+with a courtesy `User-Agent` identifying Pulse and polite backoff on 429/5xx.
+
+### TIMELINE — for phase 6 expectations
+
+- **~100 minutes** after `featureEngine` starts consuming apewisdom rows: first non-NULL
+  `mention_zscore` (`MIN_OBS_MENTIONS_7D = 20` observations at one row per 5-minute tick).
+- **~7 days**: the z-score becomes statistically meaningful rather than a score against a
+  near-degenerate sample. Deferred **M5** records that the 20-observation minimum is far below
+  the window it claims to cover.
+- **Seed #1 is not trustworthy before that 7-day mark**, even though it becomes *able* to fire at
+  the 100-minute mark.
+- **2 weeks**: review the provisional `mentions_24h >= 25` threshold against real distribution.
+
+Phase 6 observation notes should not read early seed #1 signals as validation, nor its silence
+before ~100 minutes as a defect.
 
 ---
 
