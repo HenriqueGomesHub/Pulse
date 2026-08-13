@@ -130,3 +130,51 @@ export function conditionLabel({ feature, op }) {
 export function conditionThreshold({ feature, value }) {
   return threshold(feature, value);
 }
+
+const EXIT_LEG_NAMES = {
+  pnl_pct_down: 'stop',
+  pnl_pct_up: 'target',
+  hold_hours: 'max hold',
+  exhaustion_score: 'exhaustion',
+};
+
+// The name a trader would give this exit leg. Falls back to the feature's own
+// label so an evolved strategy gating on something new still reads sensibly.
+export function legName(condition) {
+  if (condition.feature === 'pnl_pct') {
+    return EXIT_LEG_NAMES[condition.op === 'lte' || condition.op === 'lt' ? 'pnl_pct_down' : 'pnl_pct_up'];
+  }
+  return EXIT_LEG_NAMES[condition.feature] ?? featureLabel(condition.feature).toLowerCase();
+}
+
+// How far this leg has travelled toward firing, 0..1. Every exit leg in this
+// system is anchored at zero — PnL from the entry, hours from the fill,
+// exhaustion from a floor of 0 — so the threshold is the whole distance.
+// A threshold of 0 has no distance to measure: null, not a full bar.
+export function legProgress(current, thresholdValue) {
+  if (!isNum(current) || !isNum(thresholdValue) || thresholdValue === 0) return null;
+  return Math.min(1, Math.max(0, current / thresholdValue));
+}
+
+export const maxHoldLeg = (conditions) =>
+  conditions.find(
+    (condition) => condition.feature === 'hold_hours' && (condition.op === 'gte' || condition.op === 'gt')
+  ) ?? null;
+
+const TERM_LADDER = [
+  [24, 'intraday'],
+  [72, 'short swing'],
+  [168, 'multi-day'],
+  [336, 'multi-week'],
+];
+
+// Derived label only — the max-hold threshold itself is unchanged and shown beside it.
+export function termLabel(hours) {
+  if (!isNum(hours)) return null;
+  const step = TERM_LADDER.find(([limit]) => hours <= limit);
+  return step ? step[1] : 'position';
+}
+
+export function gatesLabel(met, total) {
+  return `${met}/${total}`;
+}

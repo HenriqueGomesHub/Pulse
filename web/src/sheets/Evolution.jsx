@@ -1,7 +1,10 @@
 import { GitCommitVertical } from 'lucide-react';
 import { usePoll } from '../api.js';
-import { Empty, ErrorBanner, InlineNum, Num, PageHead, Pill } from '../ui.jsx';
-import { pnlTone, signedPct, stamp } from '../format.js';
+import Sheet from '../Sheet.jsx';
+import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
+import { useRail } from '../railContext.jsx';
+import { Empty, ErrorBanner, InlineNum, Num, Pill } from '../ui.jsx';
+import { num, pnlTone, signedPct, stamp } from '../format.js';
 
 const ACTION = {
   retire: { label: 'Retired', tone: 'gray' },
@@ -49,35 +52,62 @@ function Event({ event }) {
   );
 }
 
-export default function Evolution() {
+export default function Evolution({ onClose }) {
   const { data, error, loading, updatedAt, refetch } = usePoll('/api/evolution');
   const events = data ?? [];
+  const counts = ACTION;
+
+  useRail(
+    () => (
+      <>
+        <RailBlock icon={GitCommitVertical} title="Evolution">
+          <RailLine label="Events">
+            <Num value={data ? events.length : undefined} format={(value) => num(value, 0)} reason="not loaded" />
+          </RailLine>
+          {Object.keys(counts).map((action) => (
+            <RailLine key={action} label={counts[action].label}>
+              <Num
+                value={data ? events.filter((event) => event.action === action).length : undefined}
+                format={(value) => num(value, 0)}
+                reason="not loaded"
+              />
+            </RailLine>
+          ))}
+          <RailLine label="Latest">
+            {events[0] ? <span className="num">{stamp(events[0].ts)}</span> : <span className="rail-text">—</span>}
+          </RailLine>
+        </RailBlock>
+        <RailNote>The cycle runs weekly, on Sunday.</RailNote>
+      </>
+    ),
+    [data, events.length]
+  );
 
   return (
-    <>
-      <PageHead
-        title="Evolution"
-        lead={
-          data ? (
-            <>
-              <b>
-                <InlineNum>{events.length}</InlineNum> {events.length === 1 ? 'event' : 'events'}.
-              </b>{' '}
-              The weekly cycle retires the worst qualifying strategy, asks for parameter mutations, and promotes
-              only the candidates whose holdout replay beats the strategy it retired.
-            </>
-          ) : null
-        }
-        updatedAt={updatedAt}
-      />
+    <Sheet
+      title="Evolution"
+      lead={
+        data ? (
+          <>
+            <b>
+              <InlineNum>{events.length}</InlineNum> {events.length === 1 ? 'event' : 'events'}.
+            </b>{' '}
+            The weekly cycle retires the worst qualifying strategy, asks for parameter mutations, and
+            promotes only the candidates whose holdout replay beats the strategy it retired.
+          </>
+        ) : null
+      }
+      updatedAt={updatedAt}
+      onClose={onClose}
+    >
       {error ? <ErrorBanner error={error} onRetry={refetch} /> : null}
       {loading && !data ? <p className="hint">Loading the evolution log…</p> : null}
 
       {data && events.length === 0 ? (
         <Empty icon={GitCommitVertical} label="Evolution log" title="No evolution events yet.">
           The cycle runs weekly on Sunday and judges a strategy only once it has at least{' '}
-          <InlineNum>10</InlineNum> closed trades in the last 30 days. Until one does, it retires nothing and
-          records nothing here.
+          <InlineNum>10</InlineNum> closed trades in the last 30 days. Until one does, it retires
+          nothing and records nothing here.
         </Empty>
       ) : null}
 
@@ -88,6 +118,6 @@ export default function Evolution() {
           ))}
         </ol>
       ) : null}
-    </>
+    </Sheet>
   );
 }

@@ -28,5 +28,23 @@ PULSE-SPECIFIC APPLICATION:
   is correct, not a violation.
 - lucide-react is APPROVED as a frontend dependency addition for this
   (icon system is part of the design spec).
-- No dark mode in v1 — light theme only, dark tokens reserved for
-  future use.
+
+OWNER AMENDMENTS — 2026-08-12, dashboard redesign (supersede the above):
+- DARK MODE IS IN. The earlier "no dark mode in v1, dark tokens
+  reserved" ruling is SUPERSEDED. Light and night mode both ship, the
+  choice persisted in a `pulse-theme` cookie (never localStorage — it
+  is unavailable in some contexts). Dark uses the dark tokens already
+  named above: bg #22252A, cards #23262B, borders #32363C, elevation
+  via border and never shadow.
+- THE #276BF0 ACCENT IS RETIRED FROM CHROME. The "ONE accent, max 3
+  uses per screen" rule no longer applies to Pulse chrome. Links,
+  focus rings and interactive affordances are greyscale — near-black
+  on light, near-white on dark. Chrome is black / white / grey ONLY.
+  Blue survives solely as a DATA pill (open trade, entry signal),
+  alongside the other data colors, which are untouched.
+  This is an owner decision, not an oversight: a future frontend pass
+  MUST NOT "restore" the accent as a fix. To reinstate it, get an
+  explicit owner ruling reversing this one.
+- Dark-mode data pills use low-alpha tints of their existing
+  foreground hues, not the light fills (#E7F6EC and friends glare on
+  #22252A). Same hues, different substrate — not a new palette.

@@ -16,6 +16,10 @@ export function usePoll(path) {
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
+    if (!path) {
+      setState({ data: null, error: null, loading: false, updatedAt: null });
+      return undefined;
+    }
     const controller = new AbortController();
     let live = true;
 

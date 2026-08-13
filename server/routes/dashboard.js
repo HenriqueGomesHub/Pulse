@@ -7,6 +7,8 @@ const SPARKLINE_HOURS = 24;
 const ACTIVE_SIGNAL_HOURS = 24;
 const SIGNAL_FEED_LIMIT = 200;
 const SHADOW_CLOSED_LIMIT = 25;
+const TICKER_SERIES_HOURS = 168;
+const NEAR_SIGNAL_LIMIT = 12;
 
 const isoUtc = (column) => `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
 
@@ -293,13 +295,29 @@ const SHADOW_OPEN_SQL = `
          t.symbol,
          t.strategy_id::int AS strategy_id,
          st.name AS strategy_name,
+         st.params AS params,
          t.blocked_by,
          t.qty::float8 AS qty,
          t.entry_price::float8 AS entry_price,
+         t.entry_ts,
          t.pnl_pct::float8 AS pnl_pct,
-         t.hold_hours::float8 AS hold_hours
+         t.hold_hours::float8 AS hold_hours,
+         json_build_object(
+           'social_velocity', f.social_velocity::float8,
+           'social_accel', f.social_accel::float8,
+           'author_quality', f.author_quality::float8,
+           'mention_zscore', f.mention_zscore::float8,
+           'mentions_1h', f.mentions_1h::float8,
+           'unique_authors_1h', f.unique_authors_1h::float8,
+           'rel_volume_zscore', f.rel_volume_zscore::float8,
+           'price_momentum', f.price_momentum::float8,
+           'exhaustion_score', f.exhaustion_score::float8
+         ) AS features
   FROM shadow_trades t
   JOIN strategies st ON st.id = t.strategy_id
+  LEFT JOIN LATERAL (
+    SELECT * FROM features fx WHERE fx.symbol = t.symbol ORDER BY fx.ts DESC LIMIT 1
+  ) f ON true
   WHERE t.status = 'open'
   ORDER BY t.entry_ts, t.id
 `;
@@ -361,6 +379,111 @@ const SHADOW_DROPS_SQL = `
   FROM claude_call_budget
 `;
 
+const TICKER_META_SQL = `
+  SELECT t.symbol,
+         t.name,
+         t.days_to_cover::float8 AS days_to_cover,
+         t.shares_short::float8 AS shares_short,
+         t.short_interest_settlement_date,
+         p.price::float8 AS price,
+         f.ts AS features_ts,
+         f.mention_zscore::float8 AS mention_zscore,
+         f.social_velocity::float8 AS social_velocity,
+         f.social_accel::float8 AS social_accel,
+         f.exhaustion_score::float8 AS exhaustion_score,
+         f.rel_volume_zscore::float8 AS rel_volume_zscore,
+         f.price_momentum::float8 AS price_momentum,
+         f.mentions_1h::float8 AS mentions_1h,
+         f.unique_authors_1h::float8 AS unique_authors_1h,
+         f.mentions_24h::float8 AS mentions_24h,
+         f.mention_growth_24h::float8 AS mention_growth_24h
+  FROM tickers t
+  LEFT JOIN LATERAL (
+    SELECT price FROM market_snapshots m
+    WHERE m.symbol = t.symbol ORDER BY m.ts DESC LIMIT 1
+  ) p ON true
+  LEFT JOIN LATERAL (
+    SELECT * FROM features fx WHERE fx.symbol = t.symbol ORDER BY fx.ts DESC LIMIT 1
+  ) f ON true
+  WHERE t.symbol = $1
+`;
+
+const TICKER_SERIES_SQL = `
+  WITH bounds AS (
+    SELECT (date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS last_hour,
+           ((date_trunc('hour', now() AT TIME ZONE 'UTC') - make_interval(hours => $2::int - 1)) AT TIME ZONE 'UTC')
+             AS first_hour
+  ),
+  hour_slot AS (
+    SELECT generate_series(b.first_hour, b.last_hour, interval '1 hour') AS ts
+    FROM bounds b
+  ),
+  hourly_price AS (
+    SELECT DISTINCT ON (date_trunc('hour', m.ts AT TIME ZONE 'UTC'))
+           (date_trunc('hour', m.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS ts,
+           m.price::float8 AS price
+    FROM market_snapshots m
+    WHERE m.symbol = $1 AND m.ts >= (SELECT first_hour FROM bounds)
+    ORDER BY date_trunc('hour', m.ts AT TIME ZONE 'UTC'), m.ts DESC
+  ),
+  hourly_feature AS (
+    SELECT (date_trunc('hour', f.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS ts,
+           avg(f.mention_zscore)::float8 AS mention_zscore,
+           avg(f.mentions_1h)::float8 AS mentions_1h
+    FROM features f
+    WHERE f.symbol = $1 AND f.ts >= (SELECT first_hour FROM bounds)
+    GROUP BY 1
+  )
+  SELECT ${isoUtc('s.ts')} AS ts,
+         p.price,
+         f.mention_zscore,
+         f.mentions_1h
+  FROM hour_slot s
+  LEFT JOIN hourly_price p ON p.ts = s.ts
+  LEFT JOIN hourly_feature f ON f.ts = s.ts
+  ORDER BY s.ts
+`;
+
+const NEAR_SIGNAL_FEATURES_SQL = `
+  SELECT t.symbol,
+         t.name,
+         p.price::float8 AS price,
+         f.ts AS features_ts,
+         json_build_object(
+           'social_velocity', f.social_velocity::float8,
+           'social_accel', f.social_accel::float8,
+           'author_quality', f.author_quality::float8,
+           'mention_zscore', f.mention_zscore::float8,
+           'mentions_1h', f.mentions_1h::float8,
+           'unique_authors_1h', f.unique_authors_1h::float8,
+           'mentions_24h', f.mentions_24h::float8,
+           'mention_growth_24h', f.mention_growth_24h::float8,
+           'rel_volume_zscore', f.rel_volume_zscore::float8,
+           'price_momentum', f.price_momentum::float8,
+           'price_momentum_1d', f.price_momentum_1d::float8,
+           'price_momentum_2d', f.price_momentum_2d::float8,
+           'days_to_cover', f.days_to_cover::float8,
+           'exhaustion_score', f.exhaustion_score::float8
+         ) AS features
+  FROM tickers t
+  LEFT JOIN LATERAL (
+    SELECT price FROM market_snapshots m
+    WHERE m.symbol = t.symbol AND m.ts > now() - interval '1 day'
+    ORDER BY m.ts DESC LIMIT 1
+  ) p ON true
+  LEFT JOIN LATERAL (
+    SELECT * FROM features fx WHERE fx.symbol = t.symbol ORDER BY fx.ts DESC LIMIT 1
+  ) f ON true
+`;
+
+const ACTIVE_STRATEGIES_SQL = `
+  SELECT id::int AS id, name, params FROM strategies WHERE status = 'active' ORDER BY id
+`;
+
+const OPEN_TRADE_KEYS_SQL = `
+  SELECT strategy_id::int AS strategy_id, symbol FROM trades WHERE status = 'open'
+`;
+
 const EVOLUTION_SQL = `
   SELECT e.id::int AS id,
          e.ts,
@@ -395,6 +518,47 @@ function exitStatus(params, features, pnlPct, holdHours) {
   } catch (error) {
     return { exit_logic: null, exit_conditions: [], exit_error: error.message };
   }
+}
+
+// How far a ticker sits from an entry gate it has not cleared, in units of the
+// gate's own threshold. max(|value|, 1) keeps thresholds of 0 — `social_accel gt 0`,
+// `mention_growth_24h gt 0` — from dividing by zero. A feature that was never
+// computed has no distance at all: null, never 0.
+function gateGap(condition, current) {
+  if (typeof current !== 'number' || !Number.isFinite(current)) return null;
+  return Math.abs(current - condition.value) / Math.max(Math.abs(condition.value), 1);
+}
+
+function entryProximity(params, features) {
+  const { logic, conditions } = describeBlock(params.entry, features);
+  const gates = conditions.map((condition) => {
+    const current = features[condition.feature] ?? null;
+    return { ...condition, current, gap: condition.met ? 0 : gateGap(condition, current) };
+  });
+  const unmet = gates.filter((gate) => !gate.met);
+  const unknown = unmet.some((gate) => gate.gap === null);
+
+  return {
+    entry_logic: logic,
+    gates,
+    gates_met: gates.length - unmet.length,
+    gates_total: gates.length,
+    // The worst unmet gate is the one that has to travel furthest. Unknown beats
+    // nothing: if any unmet gate has no computed feature, the distance is unknown.
+    worst_gap: unknown ? null : unmet.reduce((worst, gate) => Math.max(worst, gate.gap), 0),
+  };
+}
+
+// Gates cleared first, then the smallest worst-gap. Unknown distance sorts last
+// within its tier — never ahead of a candidate we can actually measure.
+function compareCandidates(a, b) {
+  if (a.gates_met !== b.gates_met) return b.gates_met - a.gates_met;
+  if (a.worst_gap !== b.worst_gap) {
+    if (a.worst_gap === null) return 1;
+    if (b.worst_gap === null) return -1;
+    return a.worst_gap - b.worst_gap;
+  }
+  return a.symbol.localeCompare(b.symbol) || a.strategy_id - b.strategy_id;
 }
 
 const route = (handler) => (req, res, next) => handler(req, res).catch(next);
@@ -436,7 +600,11 @@ dashboardRoutes.get(
     res.json({
       slippage_pct_per_side: SHADOW_SLIPPAGE_PCT_PER_SIDE,
       drops: drops.rows[0],
-      open: open.rows,
+      open: open.rows.map(({ params, features, ...trade }) => ({
+        ...trade,
+        side: params.side,
+        ...exitStatus(params, features, trade.pnl_pct, trade.hold_hours),
+      })),
       closed: closed.rows,
       by_strategy: byStrategy.rows,
     });
@@ -507,6 +675,80 @@ dashboardRoutes.get(
             : { id: row.parent_id, name: row.parent_name, generation: row.parent_generation },
       }))
     );
+  })
+);
+
+dashboardRoutes.get(
+  '/ticker/:symbol',
+  route(async (req, res) => {
+    const symbol = String(req.params.symbol).toUpperCase();
+    const [meta, series] = await Promise.all([
+      pool.query(TICKER_META_SQL, [symbol]),
+      pool.query(TICKER_SERIES_SQL, [symbol, TICKER_SERIES_HOURS]),
+    ]);
+    if (meta.rows.length === 0) {
+      res.status(404).json({ error: `no ticker "${symbol}" on the watchlist` });
+      return;
+    }
+    res.json({ ...meta.rows[0], series_hours: TICKER_SERIES_HOURS, series: series.rows });
+  })
+);
+
+dashboardRoutes.get(
+  '/near-signals',
+  route(async (req, res) => {
+    const [tickers, strategies, open] = await Promise.all([
+      pool.query(NEAR_SIGNAL_FEATURES_SQL),
+      pool.query(ACTIVE_STRATEGIES_SQL),
+      pool.query(OPEN_TRADE_KEYS_SQL),
+    ]);
+
+    // An open real trade is what actually stops the runner re-entering that pair.
+    // Shadow positions do not: they were never sent, so the pair is still live.
+    const held = new Set(open.rows.map((row) => `${row.strategy_id}:${row.symbol}`));
+    const candidates = [];
+
+    for (const strategy of strategies.rows) {
+      for (const ticker of tickers.rows) {
+        if (held.has(`${strategy.id}:${ticker.symbol}`)) continue;
+        try {
+          candidates.push({
+            symbol: ticker.symbol,
+            name: ticker.name,
+            price: ticker.price,
+            features_ts: ticker.features_ts,
+            strategy_id: strategy.id,
+            strategy_name: strategy.name,
+            side: strategy.params.side,
+            ...entryProximity(strategy.params, ticker.features),
+            gate_error: null,
+          });
+        } catch (error) {
+          candidates.push({
+            symbol: ticker.symbol,
+            name: ticker.name,
+            price: ticker.price,
+            features_ts: ticker.features_ts,
+            strategy_id: strategy.id,
+            strategy_name: strategy.name,
+            side: strategy.params.side,
+            entry_logic: null,
+            gates: [],
+            gates_met: 0,
+            gates_total: 0,
+            worst_gap: null,
+            gate_error: error.message,
+          });
+        }
+      }
+    }
+
+    candidates.sort(compareCandidates);
+    res.json({
+      active_strategies_n: strategies.rows.length,
+      evaluated_n: candidates.length,
+      candidates: candidates.slice(0, NEAR_SIGNAL_LIMIT),
+    });
   })
 );
 

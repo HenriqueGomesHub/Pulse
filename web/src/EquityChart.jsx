@@ -1,7 +1,7 @@
 import { Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { chartColors, tickStyle } from './chart.js';
 import { signedPct, stamp } from './format.js';
-
-const TICK = { fontSize: 11, fill: '#5c5e63', fontFamily: "'Geist Mono', ui-monospace, monospace" };
+import { useTheme } from './theme.jsx';
 
 function ChartTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
@@ -25,34 +25,38 @@ function ChartTooltip({ active, payload }) {
 }
 
 export default function EquityChart({ points, height = 200 }) {
+  const { theme } = useTheme();
+  const colors = chartColors(theme);
+  const tick = tickStyle(colors);
+
   return (
     <div className="chart">
       <ResponsiveContainer width="100%" height={height}>
         <LineChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-          <ReferenceLine y={0} stroke="#e8e9eb" strokeDasharray="2 3" />
+          <ReferenceLine y={0} stroke={colors.grid} strokeDasharray="2 3" />
           <XAxis
             dataKey="trade_id"
             tickFormatter={(id) => `#${id}`}
-            tick={TICK}
+            tick={tick}
             axisLine={false}
             tickLine={false}
             minTickGap={32}
           />
           <YAxis
             tickFormatter={(value) => signedPct(value)}
-            tick={TICK}
+            tick={tick}
             axisLine={false}
             tickLine={false}
             width={72}
           />
-          <Tooltip content={<ChartTooltip />} cursor={{ stroke: '#e8e9eb' }} />
+          <Tooltip content={<ChartTooltip />} cursor={{ stroke: colors.grid }} />
           <Line
             type="linear"
             dataKey="cum_pnl_pct"
-            stroke="#1c1d1f"
+            stroke={colors.ink}
             strokeWidth={1.5}
-            dot={{ r: 2, fill: '#1c1d1f', strokeWidth: 0 }}
-            activeDot={{ r: 3, fill: '#1c1d1f', strokeWidth: 0 }}
+            dot={{ r: 2, fill: colors.ink, strokeWidth: 0 }}
+            activeDot={{ r: 3, fill: colors.ink, strokeWidth: 0 }}
             isAnimationActive={false}
           />
         </LineChart>

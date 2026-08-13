@@ -1,4 +1,6 @@
-import { clock, conditionLabel, conditionThreshold, isNum } from './format.js';
+import { chartColors } from './chart.js';
+import { conditionLabel, conditionThreshold, isNum } from './format.js';
+import { useTheme } from './theme.jsx';
 
 export function InlineNum({ children }) {
   return <span className="num-inline">{children}</span>;
@@ -36,20 +38,6 @@ export function Stat({ label, children }) {
       <dt className="micro">{label}</dt>
       <dd>{children}</dd>
     </div>
-  );
-}
-
-export function PageHead({ title, lead, updatedAt }) {
-  return (
-    <header className="page-head">
-      <div>
-        <h1>{title}</h1>
-        {lead ? <p>{lead}</p> : null}
-      </div>
-      {updatedAt ? (
-        <p className="stamp">Updated {clock(updatedAt)} · polls every 30s</p>
-      ) : null}
-    </header>
   );
 }
 
@@ -100,6 +88,8 @@ function runsOf(values) {
 }
 
 export function Sparkline({ points, valueKey, width = 72, height = 24, label }) {
+  const { theme } = useTheme();
+  const colors = chartColors(theme);
   const values = points.map((point) => point[valueKey]);
   const runs = runsOf(values);
 
@@ -112,7 +102,7 @@ export function Sparkline({ points, valueKey, width = 72, height = 24, label }) 
             y1={height / 2}
             x2={width}
             y2={height / 2}
-            stroke="#e8e9eb"
+            stroke={colors.grid}
             strokeWidth="1"
             strokeDasharray="2 3"
           />
@@ -137,7 +127,7 @@ export function Sparkline({ points, valueKey, width = 72, height = 24, label }) 
       <svg width={width} height={height} aria-hidden="true">
         {runs.map((run) =>
           run.length === 1 ? (
-            <circle key={run[0].index} cx={x(run[0].index)} cy={y(run[0].value)} r="1.75" fill="#1c1d1f" />
+            <circle key={run[0].index} cx={x(run[0].index)} cy={y(run[0].value)} r="1.75" fill={colors.ink} />
           ) : (
             <polyline
               key={run[0].index}
