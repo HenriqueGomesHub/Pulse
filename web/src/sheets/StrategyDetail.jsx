@@ -1,20 +1,34 @@
-import { GitBranch } from 'lucide-react';
+import {
+  ArrowDownRight,
+  ArrowUpRight,
+  GitBranch,
+  Hash,
+  LineChart,
+  ListChecks,
+  LogIn,
+  LogOut,
+  Percent,
+  Target,
+  TrendingDown,
+  Trophy,
+} from 'lucide-react';
 import EquityChart from '../EquityChart.jsx';
 import Sheet from '../Sheet.jsx';
 import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
 import { useStore } from '../store.jsx';
-import { ConditionText, Empty, ErrorBanner, InlineNum, Num, Pill, Stat } from '../ui.jsx';
+import { ConditionText, Empty, ErrorBanner, InlineNum, Num, Pill, Section, Stat } from '../ui.jsx';
 import { num, pct, pnlTone, ratioAsPct, signedPct, stamp, termLabel } from '../format.js';
 
 const STATUS_TONE = { active: 'green', candidate: 'amber', retired: 'gray' };
 
-function Block({ title, block }) {
+function Block({ icon: Icon, title, block }) {
   const conditions = block.all ?? block.any ?? [];
   return (
-    <div>
-      <p className="micro">
-        {title} — {block.all ? 'all of' : 'any of'}
+    <div className="cond-block">
+      <p className="cond-head">
+        <Icon size={16} strokeWidth={1.5} aria-hidden="true" />
+        {title} <span>{block.all ? 'all of these' : 'any of these'}</span>
       </p>
       <ul className="conds">
         {conditions.map((condition, index) => (
@@ -110,46 +124,52 @@ export default function StrategyDetail({ id, onClose }) {
             {hold ? <Pill tone="gray">{termLabel(hold.value)}</Pill> : null}
           </span>
 
-          <hr className="rule" />
-          <dl className="stats">
-            <Stat label="Closed trades">
-              <Num value={strategy.stats.trades_n} format={(value) => num(value, 0)} />
-            </Stat>
-            <Stat label="Win rate">
-              <Num value={strategy.stats.win_rate} format={ratioAsPct} reason="no closed trades" />
-            </Stat>
-            <Stat label="Avg win">
-              <Num value={strategy.stats.avg_win_pct} format={signedPct} tone="pos" reason="no winning trades yet" />
-            </Stat>
-            <Stat label="Avg loss">
-              <Num value={strategy.stats.avg_loss_pct} format={signedPct} tone="neg" reason="no losing trades yet" />
-            </Stat>
-            <Stat label="Expectancy">
-              <Num
-                value={strategy.stats.expectancy}
-                format={signedPct}
-                tone={pnlTone(strategy.stats.expectancy)}
-                reason="no closed trades"
-              />
-            </Stat>
-            <Stat label="Max drawdown">
-              <Num value={strategy.stats.max_drawdown} format={pct} reason="no closed trades" />
-            </Stat>
-          </dl>
+          <Section icon={Trophy} title="How it has performed" note="Across every trade this strategy has closed.">
+            <dl className="stats">
+              <Stat icon={Hash} label="Closed trades">
+                <Num value={strategy.stats.trades_n} format={(value) => num(value, 0)} />
+              </Stat>
+              <Stat icon={Percent} label="Win rate">
+                <Num value={strategy.stats.win_rate} format={ratioAsPct} reason="no closed trades" />
+              </Stat>
+              <Stat icon={ArrowUpRight} label="Avg win">
+                <Num value={strategy.stats.avg_win_pct} format={signedPct} tone="pos" reason="no winning trades yet" />
+              </Stat>
+              <Stat icon={ArrowDownRight} label="Avg loss">
+                <Num value={strategy.stats.avg_loss_pct} format={signedPct} tone="neg" reason="no losing trades yet" />
+              </Stat>
+              <Stat icon={Target} label="Expectancy">
+                <Num
+                  value={strategy.stats.expectancy}
+                  format={signedPct}
+                  tone={pnlTone(strategy.stats.expectancy)}
+                  reason="no closed trades"
+                />
+              </Stat>
+              <Stat icon={TrendingDown} label="Max drawdown">
+                <Num value={strategy.stats.max_drawdown} format={pct} reason="no closed trades" />
+              </Stat>
+            </dl>
+          </Section>
 
-          <hr className="rule" />
-          <div className="detail-grid">
-            <Block title="Entry" block={strategy.params.entry} />
-            <Block title="Exit" block={strategy.params.exit} />
-          </div>
+          <Section
+            icon={ListChecks}
+            title="What it trades on"
+            note="These conditions are the whole strategy. Evolution mutates their numbers, never the code."
+          >
+            <div className="detail-grid">
+              <Block icon={LogIn} title="Enters when" block={strategy.params.entry} />
+              <Block icon={LogOut} title="Exits when" block={strategy.params.exit} />
+            </div>
+          </Section>
 
-          <hr className="rule" />
-          <p className="micro">Cumulative PnL by closed trade</p>
-          {strategy.equity_curve.length > 0 ? (
-            <EquityChart points={strategy.equity_curve} />
-          ) : (
-            <p className="hint">No closed trades yet, so there is no equity curve to draw.</p>
-          )}
+          <Section icon={LineChart} title="Cumulative PnL" note="Each point is one closed trade for this strategy.">
+            {strategy.equity_curve.length > 0 ? (
+              <EquityChart points={strategy.equity_curve} />
+            ) : (
+              <p className="hint">No closed trades yet, so there is no equity curve to draw.</p>
+            )}
+          </Section>
         </>
       ) : null}
     </Sheet>

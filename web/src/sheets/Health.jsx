@@ -1,10 +1,20 @@
-import { HeartPulse } from 'lucide-react';
+import {
+  AlertTriangle,
+  Briefcase,
+  CircleOff,
+  Clock,
+  EyeOff,
+  HeartPulse,
+  Percent,
+  Radio,
+  Trash2,
+} from 'lucide-react';
 import { usePoll } from '../api.js';
 import Sheet from '../Sheet.jsx';
 import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
 import { useStore } from '../store.jsx';
-import { ErrorBanner, InlineNum, NoData, Num, Stat } from '../ui.jsx';
+import { ErrorBanner, InlineNum, NoData, Num, Section, Stat } from '../ui.jsx';
 import { ago, isNum, num, pct, stamp } from '../format.js';
 
 const newest = (values) => {
@@ -95,60 +105,73 @@ export default function Health({ onClose }) {
 
       {watchlist.data ? (
         <>
-          <p className="micro">Pipeline freshness</p>
-          <dl className="stats">
-            <Stat label="Newest feature row">
-              <Age iso={freshest} reason="no feature rows at all" />
-            </Stat>
-            <Stat label="Oldest feature row">
-              <Age iso={stalest} reason="no feature rows at all" />
-            </Stat>
-            <Stat label="Last signal">
-              <Age iso={feed[0]?.ts} reason="no signals recorded" />
-            </Stat>
-          </dl>
+          <Section
+            icon={Clock}
+            title="How fresh the data is"
+            note="How long ago the pipeline last produced each kind of row."
+          >
+            <dl className="stats">
+              <Stat icon={Clock} label="Newest feature row">
+                <Age iso={freshest} reason="no feature rows at all" />
+              </Stat>
+              <Stat icon={Clock} label="Oldest feature row">
+                <Age iso={stalest} reason="no feature rows at all" />
+              </Stat>
+              <Stat icon={Radio} label="Last signal">
+                <Age iso={feed[0]?.ts} reason="no signals recorded" />
+              </Stat>
+            </dl>
+          </Section>
 
-          <hr className="rule" />
-          <p className="micro">Coverage gaps</p>
-          <dl className="stats">
-            <Stat label="No feature row">
-              <Num value={withoutFeatures} format={(value) => num(value, 0)} />
-            </Stat>
-            <Stat label="No recent price">
-              <Num value={withoutPrice} format={(value) => num(value, 0)} />
-            </Stat>
-            <Stat label="No mention z-score">
-              <Num value={withoutZscore} format={(value) => num(value, 0)} />
-            </Stat>
-            <Stat label="Signals in feed">
-              <Num value={signals.data ? feed.length : undefined} format={(value) => num(value, 0)} reason="not loaded" />
-            </Stat>
-          </dl>
-          <p className="caveat">
-            A gap is a ticker the pipeline has not produced that value for. It is not necessarily a
-            fault — a ticker nobody has mentioned has no z-score to compute.
-          </p>
+          <Section
+            icon={AlertTriangle}
+            title="Coverage gaps"
+            note="A gap is a ticker the pipeline has not produced that value for. It is not necessarily a fault — a ticker nobody has mentioned has no z-score to compute."
+          >
+            <dl className="stats">
+              <Stat icon={CircleOff} label="No feature row">
+                <Num value={withoutFeatures} format={(value) => num(value, 0)} />
+              </Stat>
+              <Stat icon={CircleOff} label="No recent price">
+                <Num value={withoutPrice} format={(value) => num(value, 0)} />
+              </Stat>
+              <Stat icon={CircleOff} label="No mention z-score">
+                <Num value={withoutZscore} format={(value) => num(value, 0)} />
+              </Stat>
+              <Stat icon={Radio} label="Signals in feed">
+                <Num
+                  value={signals.data ? feed.length : undefined}
+                  format={(value) => num(value, 0)}
+                  reason="not loaded"
+                />
+              </Stat>
+            </dl>
+          </Section>
 
-          <hr className="rule" />
-          <p className="micro">Shadow book</p>
-          <dl className="stats">
-            <Stat label="Dropped today">
-              <Num value={shadow.data?.drops?.today} format={(value) => num(value, 0)} reason="not loaded" />
-            </Stat>
-            <Stat label="Dropped total">
-              <Num value={shadow.data?.drops?.total} format={(value) => num(value, 0)} reason="not loaded" />
-            </Stat>
-            <Stat label="Slippage per side">
-              <Num value={shadow.data?.slippage_pct_per_side} format={pct} reason="not loaded" />
-            </Stat>
-            <Stat label="Open shadow">
-              <Num
-                value={shadow.data ? shadow.data.open.length : undefined}
-                format={(value) => num(value, 0)}
-                reason="not loaded"
-              />
-            </Stat>
-          </dl>
+          <Section
+            icon={EyeOff}
+            title="Shadow book"
+            note="Counterfactual entries the guards refused, and how many were dropped without being recorded."
+          >
+            <dl className="stats">
+              <Stat icon={Trash2} label="Dropped today">
+                <Num value={shadow.data?.drops?.today} format={(value) => num(value, 0)} reason="not loaded" />
+              </Stat>
+              <Stat icon={Trash2} label="Dropped total">
+                <Num value={shadow.data?.drops?.total} format={(value) => num(value, 0)} reason="not loaded" />
+              </Stat>
+              <Stat icon={Percent} label="Slippage per side">
+                <Num value={shadow.data?.slippage_pct_per_side} format={pct} reason="not loaded" />
+              </Stat>
+              <Stat icon={Briefcase} label="Open shadow">
+                <Num
+                  value={shadow.data ? shadow.data.open.length : undefined}
+                  format={(value) => num(value, 0)}
+                  reason="not loaded"
+                />
+              </Stat>
+            </dl>
+          </Section>
         </>
       ) : null}
     </Sheet>

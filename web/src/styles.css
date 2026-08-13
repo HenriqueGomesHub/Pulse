@@ -33,8 +33,19 @@
   --blue-fg: #2159c4;
   --gray-bg: #f3f4f5;
 
-  --sans: 'Geist', ui-sans-serif, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --mono: 'Geist Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+  /*
+    One typeface across the whole app: Poppins. Numerals keep tabular-nums so
+    figures still line up in a column, and --mono stays as a named role rather
+    than a second family, so data still reads as data.
+  */
+  --sans: 'Poppins', ui-sans-serif, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'Poppins', ui-sans-serif, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  /* Radius scale — everything in the app is softly rounded, nothing is square. */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 24px;
 
   /* Room a sheet must leave for the floating bar, which is never covered. */
   --bar-space: 132px;
@@ -106,7 +117,7 @@ a:hover {
 :focus-visible {
   outline: 2px solid var(--text);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
 }
 
 .sr-only {
@@ -226,7 +237,7 @@ a:hover {
   gap: 10px;
   padding: 0 16px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--surface);
   color: var(--text);
   font-family: var(--sans);
@@ -239,6 +250,34 @@ a:hover {
 .node:hover {
   border-color: var(--border-2);
   background: var(--surface-2);
+}
+
+/* Boxes are draggable: the cursor says so, and a grip appears on hover. */
+.node {
+  cursor: grab;
+  touch-action: none;
+}
+
+.node--dragging {
+  cursor: grabbing;
+  border-color: var(--text);
+  z-index: 2;
+}
+
+.node-grip {
+  margin-left: auto;
+  opacity: 0;
+  flex: 0 0 auto;
+}
+
+.node:hover .node-grip,
+.node:focus-visible .node-grip,
+.node--dragging .node-grip {
+  opacity: 1;
+}
+
+.node-flag + .node-grip {
+  margin-left: 6px;
 }
 
 .node--active {
@@ -325,7 +364,7 @@ a:hover {
   gap: 20px;
   padding: 12px 16px;
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: var(--r-lg);
   background: var(--surface);
 }
 
@@ -393,7 +432,7 @@ a:hover {
   min-width: 132px;
   padding: 7px 11px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--surface);
   font-family: var(--sans);
   text-align: left;
@@ -486,13 +525,11 @@ a:hover {
 .rail-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   margin: 0;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .rail-title svg {
@@ -541,6 +578,12 @@ a:hover {
 
 /* sheets */
 
+/*
+  The sheet is glued to the bottom edge and rises to just short of the top, with
+  its top corners rounded — a bottom sheet on every width, not a centred modal on
+  desktop. The floating bar overlays its lower edge, so the body reserves
+  --bar-space at the bottom and nothing is ever hidden behind it.
+*/
 .sheet-scrim {
   position: fixed;
   inset: 0;
@@ -549,32 +592,28 @@ a:hover {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding: 8px;
-  padding-bottom: var(--bar-space);
 }
 
 .sheet {
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 1120px;
-  max-height: 100%;
-  height: 100%;
+  max-width: 1180px;
+  height: calc(100% - 36px);
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-bottom: 0;
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
   background: var(--bg);
   overflow: hidden;
-  animation: sheet-rise 180ms ease-out;
+  animation: sheet-rise 260ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 @keyframes sheet-rise {
   from {
-    transform: translateY(18px);
-    opacity: 0;
+    transform: translateY(100%);
   }
   to {
     transform: translateY(0);
-    opacity: 1;
   }
 }
 
@@ -621,7 +660,7 @@ a:hover {
 }
 
 .sheet-body {
-  padding: 20px;
+  padding: 24px 20px var(--bar-space);
   overflow-y: auto;
   flex: 1 1 auto;
 }
@@ -633,7 +672,7 @@ a:hover {
   width: 40px;
   height: 40px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--surface);
   color: var(--text-2);
   cursor: pointer;
@@ -655,20 +694,62 @@ a:hover {
   white-space: nowrap;
 }
 
+/*
+  Sentence case, not uppercase. In Poppins a wall of tracked-out caps is harder to
+  read at a glance than plain words, and the point of these labels is that anyone
+  can understand them without decoding.
+*/
 .micro {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   color: var(--text-2);
 }
 
 .micro svg {
   color: var(--text-3);
+  flex: 0 0 auto;
+}
+
+/* sections */
+
+/* Separation is whitespace, not rules — and it must hold whatever precedes the
+   block, not only another block. */
+.block:not(:first-child) {
+  margin-top: 40px;
+}
+
+.block-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.block-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.block-head svg {
+  color: var(--text-3);
+  flex: 0 0 auto;
+}
+
+.block-note {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-2);
+  max-width: 74ch;
+}
+
+.block-body {
+  margin-top: 16px;
 }
 
 .hint {
@@ -699,7 +780,7 @@ a:hover {
 
 .panel {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   padding: 20px;
   background: var(--surface);
 }
@@ -733,7 +814,7 @@ a:hover {
 
 .table-wrap {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   overflow-x: auto;
 }
 
@@ -752,11 +833,8 @@ td {
 }
 
 thead th {
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 400;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-2);
   white-space: nowrap;
 }
@@ -803,7 +881,7 @@ tbody tr:last-child > td {
   display: block;
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--surface);
   padding: 14px;
   font-family: var(--sans);
@@ -836,7 +914,7 @@ tbody tr:last-child > td {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 
 .row-card--tap:focus-within {
@@ -963,7 +1041,7 @@ button {
   align-items: center;
   gap: 8px;
   padding: 9px 14px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--dark);
   background: var(--dark);
   color: var(--on-dark);
@@ -975,7 +1053,7 @@ button {
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid transparent;
   background: none;
   color: var(--text-2);
@@ -1014,7 +1092,7 @@ button {
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   padding: 9px 10px;
   min-width: 160px;
 }
@@ -1043,9 +1121,53 @@ button {
 
 /* holding plan */
 
+.position .stats {
+  margin-top: 18px;
+}
+
+/* The plan is a distinct idea inside the card, so it gets its own inset panel
+   rather than being separated by a rule. */
+.plan {
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+
+.plan-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.plan-head svg {
+  color: var(--text-3);
+}
+
+.plan-note {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.term {
+  margin-left: auto;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
 .legs {
   list-style: none;
-  margin: 8px 0 0;
+  margin: 14px 0 0;
   padding: 0;
 }
 
@@ -1064,11 +1186,10 @@ button {
 }
 
 .leg-name {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  text-transform: capitalize;
 }
 
 .leg-state {
@@ -1098,6 +1219,31 @@ button {
 }
 
 /* conditions */
+
+.cond-block {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.cond-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.cond-head svg {
+  color: var(--text-3);
+}
+
+.cond-head span {
+  font-weight: 400;
+  color: var(--text-2);
+}
 
 .conds {
   list-style: none;
@@ -1160,7 +1306,7 @@ button {
 
 .banner {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   padding: 16px 20px;
   margin-bottom: 16px;
   background: var(--red-bg);
@@ -1187,7 +1333,7 @@ button {
 
 .empty {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   padding: 36px 20px;
   text-align: center;
 }
@@ -1198,7 +1344,8 @@ button {
 }
 
 .empty p {
-  margin: 0;
+  margin: 0 auto;
+  max-width: 46ch;
   color: var(--text-2);
   font-size: 14px;
 }
@@ -1220,7 +1367,7 @@ button {
 .tooltip {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   padding: 8px 12px;
   font-family: var(--mono);
   font-size: 12px;
@@ -1306,20 +1453,14 @@ button {
     --bar-space: 104px;
   }
 
-  .sheet-scrim {
-    align-items: center;
-    padding: 24px;
-    padding-bottom: var(--bar-space);
-  }
-
   .sheet {
-    height: min(84vh, 900px);
+    height: calc(100% - 56px);
   }
 
   .sheet-head,
   .sheet-body {
-    padding-left: 28px;
-    padding-right: 28px;
+    padding-left: 32px;
+    padding-right: 32px;
   }
 
   .sheet-title h1 {
@@ -1382,11 +1523,11 @@ button {
   }
 
   .sheet-head {
-    padding: 16px;
+    padding: 18px 16px 14px;
   }
 
   .sheet-body {
-    padding: 16px 16px 24px;
+    padding: 20px 16px var(--bar-space);
   }
 
   .sheet-title h1 {

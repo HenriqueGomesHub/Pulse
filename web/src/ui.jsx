@@ -32,12 +32,31 @@ export function Pill({ tone = 'gray', children }) {
   return <span className={`pill pill--${tone}`}>{children}</span>;
 }
 
-export function Stat({ label, children }) {
+export function Stat({ icon: Icon, label, children }) {
   return (
     <div className="stat">
-      <dt className="micro">{label}</dt>
+      <dt className="micro">
+        {Icon ? <Icon size={14} strokeWidth={1.5} aria-hidden="true" /> : null}
+        {label}
+      </dt>
       <dd>{children}</dd>
     </div>
+  );
+}
+
+// One labelled block per idea, separated by whitespace rather than rules. Every
+// block names itself and carries an icon, so a reader can find the part they
+// want without reading the whole sheet.
+export function Section({ icon: Icon, title, note, children }) {
+  return (
+    <section className="block">
+      <div className="block-head">
+        {Icon ? <Icon size={16} strokeWidth={1.5} aria-hidden="true" /> : null}
+        <h2>{title}</h2>
+      </div>
+      {note ? <p className="block-note">{note}</p> : null}
+      <div className="block-body">{children}</div>
+    </section>
   );
 }
 

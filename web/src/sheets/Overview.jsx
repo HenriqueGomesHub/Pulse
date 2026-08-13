@@ -1,10 +1,19 @@
-import { Activity } from 'lucide-react';
+import {
+  Activity,
+  ArrowDownRight,
+  ArrowUpRight,
+  LineChart,
+  Percent,
+  Target,
+  TrendingDown,
+  Wallet,
+} from 'lucide-react';
 import EquityChart from '../EquityChart.jsx';
 import Sheet from '../Sheet.jsx';
 import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
 import { useStore } from '../store.jsx';
-import { Empty, ErrorBanner, InlineNum, NoData, Num, Stat } from '../ui.jsx';
+import { Empty, ErrorBanner, InlineNum, NoData, Num, Section, Stat } from '../ui.jsx';
 import { isNum, num, pct, pnlTone, ratioAsPct, signedPct } from '../format.js';
 
 const sumPnl = (trades) => {
@@ -70,46 +79,56 @@ export default function Overview({ onClose }) {
 
       {totals ? (
         <>
-          <dl className="stats">
-            <Stat label="Realized">
-              <Num
-                value={totals.total_pnl_pct}
-                format={signedPct}
-                tone={pnlTone(totals.total_pnl_pct)}
-                reason="no closed trades"
-              />
-            </Stat>
-            <Stat label="Unrealized">
-              <Num value={unrealized} format={signedPct} tone={pnlTone(unrealized)} reason="nothing open" />
-            </Stat>
-            <Stat label="Win rate">
-              <Num value={totals.win_rate} format={ratioAsPct} reason="no closed trades" />
-            </Stat>
-            <Stat label="Expectancy">
-              <Num
-                value={totals.expectancy}
-                format={signedPct}
-                tone={pnlTone(totals.expectancy)}
-                reason="no closed trades"
-              />
-            </Stat>
-            <Stat label="Max drawdown">
-              <Num value={totals.max_drawdown} format={pct} reason="no closed trades" />
-            </Stat>
-            <Stat label="Equity">
-              <NoData reason="Pulse tracks no account balance" />
-            </Stat>
-          </dl>
+          <Section
+            icon={Activity}
+            title="How the book is doing"
+            note="Realized is what closed trades actually returned. Unrealized is what open trades are showing right now."
+          >
+            <dl className="stats">
+              <Stat icon={ArrowDownRight} label="Realized">
+                <Num
+                  value={totals.total_pnl_pct}
+                  format={signedPct}
+                  tone={pnlTone(totals.total_pnl_pct)}
+                  reason="no closed trades"
+                />
+              </Stat>
+              <Stat icon={ArrowUpRight} label="Unrealized">
+                <Num value={unrealized} format={signedPct} tone={pnlTone(unrealized)} reason="nothing open" />
+              </Stat>
+              <Stat icon={Percent} label="Win rate">
+                <Num value={totals.win_rate} format={ratioAsPct} reason="no closed trades" />
+              </Stat>
+              <Stat icon={Target} label="Expectancy">
+                <Num
+                  value={totals.expectancy}
+                  format={signedPct}
+                  tone={pnlTone(totals.expectancy)}
+                  reason="no closed trades"
+                />
+              </Stat>
+              <Stat icon={TrendingDown} label="Max drawdown">
+                <Num value={totals.max_drawdown} format={pct} reason="no closed trades" />
+              </Stat>
+              <Stat icon={Wallet} label="Equity">
+                <NoData reason="Pulse tracks no account balance" />
+              </Stat>
+            </dl>
+          </Section>
 
-          <hr className="rule" />
-          <p className="micro">Cumulative PnL by closed trade</p>
-          {curve.length > 0 ? (
-            <EquityChart points={curve} height={240} />
-          ) : (
-            <Empty icon={Activity} label="Overview" title="No closed trades yet.">
-              The curve appears once a strategy has completed a round trip.
-            </Empty>
-          )}
+          <Section
+            icon={LineChart}
+            title="Cumulative PnL"
+            note="Each point is one closed trade, added to the running total."
+          >
+            {curve.length > 0 ? (
+              <EquityChart points={curve} height={240} />
+            ) : (
+              <Empty icon={Activity} label="Overview" title="No closed trades yet.">
+                The curve appears once a strategy has completed a round trip.
+              </Empty>
+            )}
+          </Section>
         </>
       ) : null}
     </Sheet>

@@ -1,10 +1,21 @@
-import { Briefcase, Check, Circle, EyeOff } from 'lucide-react';
+import {
+  Briefcase,
+  Check,
+  CircleDashed,
+  Clock,
+  DollarSign,
+  EyeOff,
+  Hash,
+  ListChecks,
+  LogIn,
+  TrendingDown,
+} from 'lucide-react';
 import { usePoll } from '../api.js';
 import Sheet from '../Sheet.jsx';
 import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
 import { useStore } from '../store.jsx';
-import { Empty, ErrorBanner, InlineNum, NoData, Num, Pill, Stat } from '../ui.jsx';
+import { Empty, ErrorBanner, InlineNum, NoData, Num, Pill, Section, Stat } from '../ui.jsx';
 import {
   conditionThreshold,
   duration,
@@ -63,7 +74,7 @@ function legDetail(condition) {
 
 function Leg({ condition }) {
   const detail = legDetail(condition);
-  const Icon = condition.met ? Check : Circle;
+  const Icon = condition.met ? Check : CircleDashed;
 
   return (
     <li className="leg">
@@ -83,10 +94,13 @@ function Leg({ condition }) {
 function HoldingPlan({ trade }) {
   if (trade.exit_error) {
     return (
-      <>
-        <p className="micro">Holding plan</p>
+      <div className="plan">
+        <p className="plan-head">
+          <ListChecks size={16} strokeWidth={1.5} aria-hidden="true" />
+          Holding plan
+        </p>
         <p className="hint">Not evaluated — {trade.exit_error}</p>
-      </>
+      </div>
     );
   }
 
@@ -94,15 +108,16 @@ function HoldingPlan({ trade }) {
   const term = hold ? termLabel(hold.value) : null;
 
   return (
-    <>
-      <p className="micro">
-        Holding plan — {trade.exit_logic === 'all' ? 'all of' : 'any of'}
-        {term ? (
-          <>
-            {' · '}
-            <span className="term">{term}</span>
-          </>
-        ) : null}
+    <div className="plan">
+      <p className="plan-head">
+        <ListChecks size={16} strokeWidth={1.5} aria-hidden="true" />
+        Holding plan
+        {term ? <span className="term">{term}</span> : null}
+      </p>
+      <p className="plan-note">
+        {trade.exit_logic === 'all'
+          ? 'It closes only when every leg below is met.'
+          : 'It closes as soon as any one leg below is met.'}
       </p>
       <ul className="legs">
         {trade.exit_conditions.map((condition, index) => (
@@ -115,7 +130,7 @@ function HoldingPlan({ trade }) {
           conditions above.
         </p>
       )}
-    </>
+    </div>
   );
 }
 
@@ -146,24 +161,23 @@ function Position({ trade, shadow }) {
         </p>
       ) : null}
 
-      <hr className="rule" />
       <dl className="stats">
-        <Stat label="Entry">
+        <Stat icon={DollarSign} label="Entry">
           <Num value={trade.entry_price} format={price} reason="no fill price" />
         </Stat>
-        <Stat label="Quantity">
+        <Stat icon={Hash} label="Quantity">
           <Num value={trade.qty} format={qty} />
         </Stat>
-        <Stat label="PnL">
+        <Stat icon={TrendingDown} label="PnL now">
           <Num value={trade.pnl_pct} format={signedPct} tone={pnlTone(trade.pnl_pct)} reason="not marked yet" />
         </Stat>
-        <Stat label="Max adverse">
+        <Stat icon={TrendingDown} label="Worst so far">
           <Num value={trade.trade_max_adverse_pct} format={pct} reason="not measured on shadow trades" />
         </Stat>
-        <Stat label="Held">
+        <Stat icon={Clock} label="Held">
           <Num value={trade.hold_hours} format={duration} reason="no entry timestamp" />
         </Stat>
-        <Stat label="Entered">
+        <Stat icon={LogIn} label="Entered">
           {trade.entry_ts ? (
             <span className="num" title={trade.entry_ts}>
               {stamp(trade.entry_ts)}
@@ -174,7 +188,6 @@ function Position({ trade, shadow }) {
         </Stat>
       </dl>
 
-      <hr className="rule" />
       <HoldingPlan trade={trade} />
     </section>
   );
@@ -252,26 +265,31 @@ export default function CurrentTrades({ onClose }) {
       ) : null}
 
       {real.length > 0 ? (
-        <div className="cards">
-          {real.map((trade) => (
-            <Position key={`real-${trade.id}`} trade={trade} />
-          ))}
-        </div>
+        <Section
+          icon={Briefcase}
+          title="Real positions"
+          note="Orders that were actually sent. These are the ones that count."
+        >
+          <div className="cards">
+            {real.map((trade) => (
+              <Position key={`real-${trade.id}`} trade={trade} />
+            ))}
+          </div>
+        </Section>
       ) : null}
 
       {shadows.length > 0 ? (
-        <>
-          <hr className="rule" />
-          <p className="micro">
-            Shadow book — <InlineNum>{shadows.length}</InlineNum> counterfactual{' '}
-            {shadows.length === 1 ? 'position' : 'positions'}
-          </p>
+        <Section
+          icon={EyeOff}
+          title="Shadow positions"
+          note="Entries a budget guard refused. No order was sent — they show what would have happened, and count toward nothing."
+        >
           <div className="cards">
             {shadows.map((trade) => (
               <Position key={`shadow-${trade.id}`} trade={trade} shadow />
             ))}
           </div>
-        </>
+        </Section>
       ) : null}
 
       {shadow.data && shadows.length === 0 && real.length === 0 ? (

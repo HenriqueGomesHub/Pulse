@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react';
-import { ScrollText } from 'lucide-react';
+import { FileText, Filter, LogIn, LogOut, ScrollText, Trophy } from 'lucide-react';
 import Rows from '../Rows.jsx';
 import Sheet from '../Sheet.jsx';
 import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
 import { useStore } from '../store.jsx';
-import { Empty, ErrorBanner, InlineNum, NoData, Num, Pill } from '../ui.jsx';
+import { Empty, ErrorBanner, InlineNum, NoData, Num, Pill, Section } from '../ui.jsx';
 import { duration, num, pct, pnlTone, price, qty, ratioAsPct, signedPct, stamp } from '../format.js';
 
 const OUTCOME_TONE = { win: 'green', loss: 'red' };
@@ -19,16 +19,22 @@ function Detail({ trade }) {
   return (
     <div className="detail">
       <div className="detail-grid">
-        <div>
-          <p className="micro">Entry reasoning</p>
+        <div className="cond-block">
+          <p className="cond-head">
+            <LogIn size={16} strokeWidth={1.5} aria-hidden="true" />
+            Why it entered
+          </p>
           <p className="reason">{trade.entry_reasoning ?? <NoData reason="no reasoning recorded" />}</p>
           <p>
             Conviction{' '}
             <Num value={trade.entry_conviction} format={(value) => num(value, 2)} reason="not scored" />
           </p>
         </div>
-        <div>
-          <p className="micro">Exit reasoning</p>
+        <div className="cond-block">
+          <p className="cond-head">
+            <LogOut size={16} strokeWidth={1.5} aria-hidden="true" />
+            Why it exited
+          </p>
           <p className="reason">{trade.exit_reasoning ?? <NoData reason="no reasoning recorded" />}</p>
           <p>
             Conviction{' '}
@@ -176,6 +182,7 @@ export default function TradeLog({ onClose }) {
         <div className="filters">
           <div className="field">
             <label className="micro" htmlFor="filter-strategy">
+              <Filter size={14} strokeWidth={1.5} aria-hidden="true" />
               Strategy
             </label>
             <select id="filter-strategy" value={strategy} onChange={(event) => setStrategy(event.target.value)}>
@@ -189,6 +196,7 @@ export default function TradeLog({ onClose }) {
           </div>
           <div className="field">
             <label className="micro" htmlFor="filter-outcome">
+              <Trophy size={14} strokeWidth={1.5} aria-hidden="true" />
               Outcome
             </label>
             <select id="filter-outcome" value={outcome} onChange={(event) => setOutcome(event.target.value)}>
@@ -210,22 +218,22 @@ export default function TradeLog({ onClose }) {
       ) : null}
 
       {shown.length > 0 ? (
-        <Rows
-          caption="Closed paper trades"
-          columns={columns}
-          rows={shown}
-          rowKey={(trade) => trade.id}
-          rowLabel={(trade) => `${trade.symbol} trade ${trade.id}`}
-          onRowClick={(trade) => setExpanded((current) => (current === trade.id ? null : trade.id))}
-        />
+        <Section icon={ScrollText} title="Closed round trips" note="Open a row to read why it was entered and exited.">
+          <Rows
+            caption="Closed paper trades"
+            columns={columns}
+            rows={shown}
+            rowKey={(trade) => trade.id}
+            rowLabel={(trade) => `${trade.symbol} trade ${trade.id}`}
+            onRowClick={(trade) => setExpanded((current) => (current === trade.id ? null : trade.id))}
+          />
+        </Section>
       ) : null}
 
       {expanded !== null && shown.some((trade) => trade.id === expanded) ? (
-        <>
-          <hr className="rule" />
-          <p className="micro">Trade #{expanded}</p>
+        <Section icon={FileText} title={`Trade #${expanded}`}>
           <Detail trade={shown.find((trade) => trade.id === expanded)} />
-        </>
+        </Section>
       ) : null}
 
       {trades.data && closed.length > 0 && shown.length === 0 ? (

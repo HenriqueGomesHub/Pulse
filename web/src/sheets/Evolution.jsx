@@ -3,7 +3,7 @@ import { usePoll } from '../api.js';
 import Sheet from '../Sheet.jsx';
 import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
-import { Empty, ErrorBanner, InlineNum, Num, Pill } from '../ui.jsx';
+import { Empty, ErrorBanner, InlineNum, Num, Pill, Section } from '../ui.jsx';
 import { num, pnlTone, signedPct, stamp } from '../format.js';
 
 const ACTION = {
@@ -112,11 +112,17 @@ export default function Evolution({ onClose }) {
       ) : null}
 
       {events.length > 0 ? (
-        <ol className="timeline">
-          {events.map((event) => (
-            <Event key={event.id} event={event} />
-          ))}
-        </ol>
+        <Section
+          icon={GitCommitVertical}
+          title="What the weekly cycle did"
+          note="Newest first. Each entry records what changed and the holdout result that justified it."
+        >
+          <ol className="timeline">
+            {events.map((event) => (
+              <Event key={event.id} event={event} />
+            ))}
+          </ol>
+        </Section>
       ) : null}
     </Sheet>
   );

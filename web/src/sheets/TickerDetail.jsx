@@ -7,14 +7,25 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { LineChart as LineChartIcon } from 'lucide-react';
+import {
+  CalendarDays,
+  Clock,
+  DollarSign,
+  Flame,
+  Gauge,
+  Hash,
+  LineChart as LineChartIcon,
+  MessageSquare,
+  Scissors,
+  TrendingUp,
+} from 'lucide-react';
 import { usePoll } from '../api.js';
 import Sheet from '../Sheet.jsx';
 import { chartColors, tickStyle } from '../chart.js';
 import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
 import { useTheme } from '../theme.jsx';
-import { Empty, ErrorBanner, InlineNum, NoData, Num, Stat } from '../ui.jsx';
+import { Empty, ErrorBanner, InlineNum, NoData, Num, Section, Stat } from '../ui.jsx';
 import { isNum, num, price, stamp } from '../format.js';
 
 const decimal = (value) => num(value, 2);
@@ -187,48 +198,54 @@ export default function TickerDetail({ symbol, onClose }) {
 
       {data ? (
         <>
-          <dl className="stats">
-            <Stat label="Price">
-              <Num value={data.price} format={price} reason="no recent quote" />
-            </Stat>
-            <Stat label="Mention z-score">
-              <Num value={data.mention_zscore} format={decimal} reason="no social observations" />
-            </Stat>
-            <Stat label="Mentions 24h">
-              <Num value={data.mentions_24h} format={(value) => num(value, 0)} reason="not computed" />
-            </Stat>
-            <Stat label="Mention growth 24h">
-              <Num value={data.mention_growth_24h} format={decimal} reason="not computed" />
-            </Stat>
-            <Stat label="Exhaustion">
-              <Num value={data.exhaustion_score} format={decimal} reason="not computed" />
-            </Stat>
-            <Stat label="Price momentum">
-              <Num value={data.price_momentum} format={decimal} reason="not computed" />
-            </Stat>
-          </dl>
+          <Section icon={Gauge} title="Where it stands now" note="The latest feature row computed for this ticker.">
+            <dl className="stats">
+              <Stat icon={DollarSign} label="Price">
+                <Num value={data.price} format={price} reason="no recent quote" />
+              </Stat>
+              <Stat icon={MessageSquare} label="Mention z-score">
+                <Num value={data.mention_zscore} format={decimal} reason="no social observations" />
+              </Stat>
+              <Stat icon={MessageSquare} label="Mentions 24h">
+                <Num value={data.mentions_24h} format={(value) => num(value, 0)} reason="not computed" />
+              </Stat>
+              <Stat icon={TrendingUp} label="Mention growth 24h">
+                <Num value={data.mention_growth_24h} format={decimal} reason="not computed" />
+              </Stat>
+              <Stat icon={Flame} label="Exhaustion">
+                <Num value={data.exhaustion_score} format={decimal} reason="not computed" />
+              </Stat>
+              <Stat icon={TrendingUp} label="Price momentum">
+                <Num value={data.price_momentum} format={decimal} reason="not computed" />
+              </Stat>
+            </dl>
+          </Section>
 
-          <hr className="rule" />
-          <p className="micro">Price and mention z-score</p>
-          <Chart series={data.series} />
+          <Section
+            icon={LineChartIcon}
+            title="Price and attention over time"
+            note="Both series come from our own snapshots. Where an hour was never observed, the line breaks instead of guessing."
+          >
+            <Chart series={data.series} />
+          </Section>
 
-          <hr className="rule" />
-          <p className="micro">Short interest</p>
-          <dl className="stats">
-            <Stat label="Days to cover">
-              <Num value={data.days_to_cover} format={decimal} reason="no short interest recorded" />
-            </Stat>
-            <Stat label="Shares short">
-              <Num value={data.shares_short} format={(value) => num(value, 0)} reason="no short interest recorded" />
-            </Stat>
-            <Stat label="Settlement date">
-              {data.short_interest_settlement_date ? (
-                <span className="num">{stamp(data.short_interest_settlement_date)}</span>
-              ) : (
-                <NoData reason="no short interest recorded" />
-              )}
-            </Stat>
-          </dl>
+          <Section icon={Scissors} title="Short interest" note="Reported by FINRA, twice a month.">
+            <dl className="stats">
+              <Stat icon={Clock} label="Days to cover">
+                <Num value={data.days_to_cover} format={decimal} reason="no short interest recorded" />
+              </Stat>
+              <Stat icon={Hash} label="Shares short">
+                <Num value={data.shares_short} format={(value) => num(value, 0)} reason="no short interest recorded" />
+              </Stat>
+              <Stat icon={CalendarDays} label="Settlement date">
+                {data.short_interest_settlement_date ? (
+                  <span className="num">{stamp(data.short_interest_settlement_date)}</span>
+                ) : (
+                  <NoData reason="no short interest recorded" />
+                )}
+              </Stat>
+            </dl>
+          </Section>
         </>
       ) : null}
     </Sheet>

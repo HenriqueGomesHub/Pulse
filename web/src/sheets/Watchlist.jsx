@@ -5,7 +5,7 @@ import Rows from '../Rows.jsx';
 import Sheet from '../Sheet.jsx';
 import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
-import { ErrorBanner, InlineNum, NoData, Num, Pill, Sparkline } from '../ui.jsx';
+import { ErrorBanner, InlineNum, NoData, Num, Pill, Section, Sparkline } from '../ui.jsx';
 import { ago, isNum, num, price } from '../format.js';
 
 function lead(rows) {
@@ -171,14 +171,20 @@ export default function Watchlist({ onClose }) {
       {error ? <ErrorBanner error={error} onRetry={refetch} /> : null}
       {loading && !data ? <p className="hint">Loading watchlist…</p> : null}
       {data ? (
-        <Rows
-          caption="Watchlist tickers with their latest social and market features"
-          columns={columns}
-          rows={rows}
-          rowKey={(row) => row.symbol}
-          rowLabel={(row) => row.symbol}
-          onRowClick={(row) => navigate(`/watchlist/${row.symbol}`)}
-        />
+        <Section
+          icon={Radar}
+          title="Tickers being watched"
+          note="Open any ticker for its full price and attention history."
+        >
+          <Rows
+            caption="Watchlist tickers with their latest social and market features"
+            columns={columns}
+            rows={rows}
+            rowKey={(row) => row.symbol}
+            rowLabel={(row) => row.symbol}
+            onRowClick={(row) => navigate(`/watchlist/${row.symbol}`)}
+          />
+        </Section>
       ) : null}
     </Sheet>
   );

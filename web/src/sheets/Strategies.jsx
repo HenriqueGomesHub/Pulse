@@ -6,7 +6,7 @@ import Sheet from '../Sheet.jsx';
 import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
 import { useStore } from '../store.jsx';
-import { ErrorBanner, InlineNum, Num, Pill } from '../ui.jsx';
+import { ErrorBanner, InlineNum, Num, Pill, Section } from '../ui.jsx';
 import { num, pct, pnlTone, ratioAsPct, signedPct } from '../format.js';
 
 const STATUS_TONE = { active: 'green', candidate: 'amber', retired: 'gray' };
@@ -185,29 +185,36 @@ export default function Strategies({ onClose }) {
       {strategies.error ? <ErrorBanner error={strategies.error} onRetry={strategies.refetch} /> : null}
       {strategies.loading && !strategies.data ? <p className="hint">Loading strategies…</p> : null}
       {strategies.data ? (
-        <Rows
-          caption="Strategies with their closed-trade statistics"
-          columns={columns}
-          rows={rows}
-          rowKey={(row) => row.id}
-          rowLabel={(row) => row.name}
-          onRowClick={(row) => navigate(`/strategies/${row.id}`)}
-        />
+        <Section
+          icon={GitBranch}
+          title="The population"
+          note="Only active strategies are evaluated. Open one to see the exact conditions it enters and exits on."
+        >
+          <Rows
+            caption="Strategies with their closed-trade statistics"
+            columns={columns}
+            rows={rows}
+            rowKey={(row) => row.id}
+            rowLabel={(row) => row.name}
+            onRowClick={(row) => navigate(`/strategies/${row.id}`)}
+          />
+        </Section>
       ) : null}
 
       {compare.length > 0 ? (
-        <>
-          <hr className="rule" />
-          <p className="micro">
-            <EyeOff size={14} strokeWidth={1.5} aria-hidden="true" /> Shadow against real
-          </p>
-          <p className="caveat">
-            Entries a budget guard refused, priced with{' '}
-            <InlineNum>{shadow.data.slippage_pct_per_side}%</InlineNum> slippage per side. No order was
-            ever sent and none of this counts toward any strategy statistic above.
-          </p>
+        <Section
+          icon={EyeOff}
+          title="Shadow against real"
+          note={
+            <>
+              Entries a budget guard refused, priced with{' '}
+              <InlineNum>{shadow.data.slippage_pct_per_side}%</InlineNum> slippage per side. No order
+              was ever sent, and none of this counts toward any statistic above.
+            </>
+          }
+        >
           <ShadowCompare rows={compare} />
-        </>
+        </Section>
       ) : null}
     </Sheet>
   );

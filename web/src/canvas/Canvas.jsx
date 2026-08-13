@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Maximize2 } from 'lucide-react';
+import { GripVertical, RotateCcw } from 'lucide-react';
 import { bounds, edgePath, layoutGraph } from './graph.js';
+import { applyLayout, breakpointKey, clearLayout, readLayout, saveNode } from './layout.js';
 import { useDesktop } from '../useMedia.js';
 
 const MIN_ZOOM = 0.45;
 const MAX_ZOOM = 1.8;
 const PADDING = 48;
+// Below this the pointer was held still enough to mean "open", not "move".
+const DRAG_THRESHOLD = 4;
 
 const clampZoom = (value) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -17,12 +20,17 @@ export default function Canvas({ strategies, activeId }) {
   const frameRef = useRef(null);
   const pointers = useRef(new Map());
   const gesture = useRef(null);
+  const drag = useRef(null);
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
-  const [moved, setMoved] = useState(false);
+  const [panned, setPanned] = useState(false);
+  const [layout, setLayout] = useState(readLayout);
+  const [dragId, setDragId] = useState(null);
 
   const graph = useMemo(() => layoutGraph(strategies, desktop), [strategies, desktop]);
-  const byId = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph]);
-  const box = useMemo(() => bounds(graph.nodes), [graph]);
+  const nodes = useMemo(() => applyLayout(graph.nodes, layout, desktop), [graph, layout, desktop]);
+  const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const box = useMemo(() => bounds(nodes), [nodes]);
+  const rearranged = Object.keys(layout[breakpointKey(desktop)] ?? {}).length > 0;
 
   const fit = useCallback(() => {
     const frame = frameRef.current;
@@ -30,21 +38,26 @@ export default function Canvas({ strategies, activeId }) {
     const { width, height } = frame.getBoundingClientRect();
     const graphWidth = box.maxX - box.minX;
     const graphHeight = box.maxY - box.minY;
-    // Mobile is a tall spine: fitting its full height would shrink the nodes below
+    // Mobile is a tall spine: fitting its full height would shrink the boxes below
     // a thumb-sized target, so only the width is fitted and the spine is panned.
     const k = desktop
       ? clampZoom(Math.min((width - PADDING * 2) / graphWidth, (height - PADDING * 2) / graphHeight, 1))
       : clampZoom(Math.min((width - 32) / graphWidth, 1));
     setView({
       x: (width - graphWidth * k) / 2 - box.minX * k,
-      // Mobile starts below the top bar so the root node never sits under the brand.
+      // Mobile starts below the top bar so the root box never sits under the brand.
       y: desktop ? (height - graphHeight * k) / 2 - box.minY * k : 76 - box.minY * k,
       k,
     });
-    setMoved(false);
+    setPanned(false);
   }, [box, desktop]);
 
-  useLayoutEffect(fit, [fit]);
+  // Only refit when the layout genuinely changes shape — never while dragging a
+  // box, which would yank the canvas out from under the reader's finger.
+  useLayoutEffect(() => {
+    fit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [desktop, graph.nodes.length]);
 
   useEffect(() => {
     const onResize = () => fit();
@@ -54,7 +67,7 @@ export default function Canvas({ strategies, activeId }) {
 
   const pan = (dx, dy) => {
     setView((prev) => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
-    setMoved(true);
+    setPanned(true);
   };
 
   const zoomAt = (factor, clientX, clientY) => {
@@ -68,7 +81,7 @@ export default function Canvas({ strategies, activeId }) {
       const scale = k / prev.k;
       return { k, x: px - (px - prev.x) * scale, y: py - (py - prev.y) * scale };
     });
-    setMoved(true);
+    setPanned(true);
   };
 
   const onPointerDown = (event) => {
@@ -113,8 +126,61 @@ export default function Canvas({ strategies, activeId }) {
     pan(-event.deltaX, -event.deltaY);
   };
 
-  // Tabbing to an off-screen node must bring it into view, or keyboard users
-  // navigate a canvas they cannot see.
+  // --- dragging a box ---
+
+  const onNodePointerDown = (event, node) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = {
+      id: node.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: node.x,
+      originY: node.y,
+      exceeded: false,
+    };
+  };
+
+  const onNodePointerMove = (event) => {
+    const state = drag.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+
+    const dx = event.clientX - state.startX;
+    const dy = event.clientY - state.startY;
+    if (!state.exceeded && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+
+    state.exceeded = true;
+    setDragId(state.id);
+    // Screen pixels to canvas units: the layer is scaled, the pointer is not.
+    const x = state.originX + dx / view.k;
+    const y = state.originY + dy / view.k;
+    setLayout((prev) => ({
+      ...prev,
+      [breakpointKey(desktop)]: { ...prev[breakpointKey(desktop)], [state.id]: [x, y] },
+    }));
+  };
+
+  const onNodePointerUp = (event, node) => {
+    const state = drag.current;
+    drag.current = null;
+    setDragId(null);
+    if (!state || state.pointerId !== event.pointerId) return;
+
+    if (state.exceeded) {
+      const moved = byId.get(node.id);
+      setLayout(saveNode(desktop, node.id, moved.x, moved.y));
+      return;
+    }
+    // Held still: this was a tap, so open the box.
+    navigate(node.route);
+  };
+
+  const resetLayout = () => {
+    setLayout(clearLayout(desktop));
+    // fit() runs against the restored default positions on the next frame.
+    requestAnimationFrame(fit);
+  };
+
   const onNodeFocus = (node) => {
     const frame = frameRef.current;
     if (!frame) return;
@@ -133,8 +199,6 @@ export default function Canvas({ strategies, activeId }) {
       return { ...prev, x, y };
     });
   };
-
-  const open = (node) => navigate(node.route);
 
   return (
     <div className="canvas-frame" ref={frameRef}>
@@ -169,7 +233,7 @@ export default function Canvas({ strategies, activeId }) {
             })}
           </svg>
 
-          {graph.nodes.map((node) => {
+          {nodes.map((node) => {
             const Icon = node.icon;
             return (
               <button
@@ -180,28 +244,46 @@ export default function Canvas({ strategies, activeId }) {
                   node.root ? 'node--root' : '',
                   node.sub ? 'node--sub' : '',
                   activeId === node.id ? 'node--active' : '',
+                  dragId === node.id ? 'node--dragging' : '',
                 ]
                   .filter(Boolean)
                   .join(' ')}
                 style={{ left: node.x, top: node.y, width: node.w, height: node.h }}
                 onFocus={() => onNodeFocus(node)}
-                onClick={() => open(node)}
+                onPointerDown={(event) => onNodePointerDown(event, node)}
+                onPointerMove={onNodePointerMove}
+                onPointerUp={(event) => onNodePointerUp(event, node)}
+                onPointerCancel={() => {
+                  drag.current = null;
+                  setDragId(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    navigate(node.route);
+                  }
+                }}
               >
-                {Icon ? <Icon size={16} strokeWidth={1.5} aria-hidden="true" /> : <span className="node-dot" aria-hidden="true" />}
+                {Icon ? (
+                  <Icon size={16} strokeWidth={1.5} aria-hidden="true" />
+                ) : (
+                  <span className="node-dot" aria-hidden="true" />
+                )}
                 <span className="node-label">{node.label}</span>
                 {node.status && node.status !== 'active' ? (
                   <span className="node-flag">{node.status}</span>
                 ) : null}
+                <GripVertical className="node-grip" size={14} strokeWidth={1.5} aria-hidden="true" />
               </button>
             );
           })}
         </div>
       </div>
 
-      {moved ? (
-        <button type="button" className="canvas-reset" onClick={fit}>
-          <Maximize2 size={14} strokeWidth={1.5} aria-hidden="true" />
-          Reset view
+      {panned || rearranged ? (
+        <button type="button" className="canvas-reset" onClick={rearranged ? resetLayout : fit}>
+          <RotateCcw size={14} strokeWidth={1.5} aria-hidden="true" />
+          {rearranged ? 'Reset layout' : 'Reset view'}
         </button>
       ) : null}
     </div>
