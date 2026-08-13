@@ -47,8 +47,6 @@
   --r-lg: 16px;
   --r-xl: 24px;
 
-  /* Room a sheet must leave for the floating bar, which is never covered. */
-  --bar-space: 132px;
 }
 
 [data-theme='dark'] {
@@ -130,6 +128,44 @@ a:hover {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
+}
+
+/*
+  Scrollbars follow the theme like everything else: no track, a hairline-grey
+  rounded thumb that darkens on hover. The transparent border plus content-box
+  clip is what gives the thumb its inset — without it the bar runs edge to edge
+  and reads as a chrome element rather than part of the page.
+*/
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--border-2);
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-3);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--text-2);
+  background-clip: content-box;
 }
 
 /* shell */
@@ -349,16 +385,15 @@ a:hover {
 /* floating bar */
 
 /*
-  The bar sits ABOVE the sheet scrim, not under it: the spec asks for it to stay
-  visible at all times. Sheets reserve --bar-space at the bottom so nothing is
-  ever hidden behind it.
+  The bar belongs to the canvas. An open sheet covers it — it sits below the
+  scrim, so opening a page hides it rather than floating it over the content.
 */
 .bar {
   position: absolute;
   left: 16px;
   right: 16px;
   bottom: 16px;
-  z-index: 20;
+  z-index: 3;
   display: flex;
   align-items: stretch;
   gap: 20px;
@@ -581,8 +616,8 @@ a:hover {
 /*
   The sheet is glued to the bottom edge and rises to just short of the top, with
   its top corners rounded — a bottom sheet on every width, not a centred modal on
-  desktop. The floating bar overlays its lower edge, so the body reserves
-  --bar-space at the bottom and nothing is ever hidden behind it.
+  desktop. It fills the stage edge to edge: flush to the left of the viewport and
+  stopping at the rail, taking the whole space rather than floating in it.
 */
 .sheet-scrim {
   position: fixed;
@@ -591,14 +626,13 @@ a:hover {
   background: var(--scrim);
   display: flex;
   align-items: flex-end;
-  justify-content: center;
+  justify-content: flex-start;
 }
 
 .sheet {
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 1180px;
   height: calc(100% - 36px);
   border: 1px solid var(--border);
   border-bottom: 0;
@@ -660,7 +694,7 @@ a:hover {
 }
 
 .sheet-body {
-  padding: 24px 20px var(--bar-space);
+  padding: 24px 20px 40px;
   overflow-y: auto;
   flex: 1 1 auto;
 }
@@ -1449,10 +1483,6 @@ button {
 /* ---- desktop ---- */
 
 @media (min-width: 768px) {
-  :root {
-    --bar-space: 104px;
-  }
-
   .sheet {
     height: calc(100% - 56px);
   }
@@ -1527,7 +1557,7 @@ button {
   }
 
   .sheet-body {
-    padding: 20px 16px var(--bar-space);
+    padding: 20px 16px 32px;
   }
 
   .sheet-title h1 {
