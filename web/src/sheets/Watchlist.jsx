@@ -5,7 +5,7 @@ import Rows from '../Rows.jsx';
 import Sheet from '../Sheet.jsx';
 import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
-import { ErrorBanner, InlineNum, NoData, Num, Pill, Section, Sparkline } from '../ui.jsx';
+import { Breadth, ErrorBanner, InlineNum, NoData, Num, Pill, Section, Sparkline } from '../ui.jsx';
 import { ago, isNum, num, price } from '../format.js';
 
 function lead(rows) {
@@ -128,6 +128,12 @@ export default function Watchlist({ onClose }) {
           label={`${row.symbol} mention z-score`}
         />
       ),
+    },
+    {
+      key: 'breadth',
+      header: 'Attention breadth',
+      align: 'right',
+      cell: (row) => <Breadth value={row.attention_breadth} of={row.attention_breadth_of} />,
     },
     {
       key: 'velocity',

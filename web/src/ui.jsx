@@ -28,6 +28,23 @@ export function Num({ value, format, tone, reason }) {
   return <span className={tone ? `num num--${tone}` : 'num'}>{format(value)}</span>;
 }
 
+// n/m, where m counts only the instruments that actually have a baseline. 1/1 and 1/4 are
+// different facts, so the denominator is always shown rather than assumed.
+export function Breadth({ value, of }) {
+  if (!isNum(value) || !isNum(of)) {
+    return <NoData reason="no attention instrument has a baseline for this ticker yet" />;
+  }
+  return (
+    <span
+      className="num"
+      role="img"
+      aria-label={`${value} of ${of} attention instruments elevated`}
+    >
+      {value}/{of}
+    </span>
+  );
+}
+
 export function Pill({ tone = 'gray', children }) {
   return <span className={`pill pill--${tone}`}>{children}</span>;
 }

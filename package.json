@@ -11,6 +11,7 @@
     "tick": "node server/index.js tick",
     "meta": "node server/index.js meta",
     "stats": "node server/index.js stats",
+    "wiki": "node server/index.js wiki",
     "evolve": "node server/index.js evolve",
     "migrate": "node server/db/migrate.js",
     "test": "node --test server/strategies/engine.test.js"

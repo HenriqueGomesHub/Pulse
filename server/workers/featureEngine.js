@@ -1,4 +1,5 @@
 import { pool } from '../db/pool.js';
+import { attentionBreadth } from '../services/attentionInstruments.js';
 import {
   MENTION_BASELINE_INTERVAL,
   MENTION_BASELINE_MIN_OBS,
@@ -9,6 +10,8 @@ const MIN_OBS_REL_VOLUME_30D = 20;
 const MIN_OBS_MENTIONS_24H = 12;
 const MENTION_SD_FLOOR = 1;
 const HOUR_MS = 60 * 60 * 1000;
+const WIKI_BASELINE_DAYS = 30;
+const WIKI_BASELINE_MIN_OBS = 20;
 
 const MARKET_SQL = `
   WITH recent AS (
@@ -74,6 +77,30 @@ const MENTION_SQL = `
   WHERE r.rn = 1
 `;
 
+// One observation per ticker per day. The baseline is the WIKI_BASELINE_DAYS observations strictly
+// before the scored day — excluding the scored observation is the ratified convention for new
+// feature families — and the window is anchored to the latest observed date rather than to now(),
+// so the value is bit-stable across every tick of a day regardless of clock or timezone.
+const WIKI_SQL = `
+  WITH observations AS (
+    SELECT symbol, period_date, value,
+           row_number() OVER (PARTITION BY symbol ORDER BY period_date DESC) AS rn
+    FROM attention_snapshots
+    WHERE instrument = 'wikipedia' AND granularity = 'daily'
+  ),
+  baseline AS (
+    SELECT symbol, count(value) AS n, avg(value) AS mean, stddev_samp(value) AS sd
+    FROM observations
+    WHERE rn BETWEEN 2 AND ${WIKI_BASELINE_DAYS + 1}
+    GROUP BY symbol
+  )
+  SELECT o.symbol, to_char(o.period_date, 'YYYY-MM-DD') AS period_date, o.value,
+         b.n, b.mean, b.sd
+  FROM observations o
+  LEFT JOIN baseline b USING (symbol)
+  WHERE o.rn = 1
+`;
+
 const BULL_RATIO_SQL = `
   WITH ranked AS (
     SELECT symbol, bull_ratio,
@@ -111,16 +138,18 @@ function exhaustionScore(inputs) {
 export async function featureEngine() {
   const ts = new Date();
   const primarySource = await primaryMentionSource();
-  const [tickers, market, social, bull] = await Promise.all([
+  const [tickers, market, social, bull, wiki] = await Promise.all([
     pool.query('SELECT symbol, days_to_cover FROM tickers ORDER BY symbol'),
     pool.query(MARKET_SQL),
     pool.query(MENTION_SQL, [primarySource]),
     pool.query(BULL_RATIO_SQL),
+    pool.query(WIKI_SQL),
   ]);
 
   const marketBySymbol = new Map(market.rows.map((row) => [row.symbol, row]));
   const socialBySymbol = new Map(social.rows.map((row) => [row.symbol, row]));
   const bullBySymbol = new Map(bull.rows.map((row) => [row.symbol, row]));
+  const wikiBySymbol = new Map(wiki.rows.map((row) => [row.symbol, row]));
 
   const values = [];
   const params = [];
@@ -129,6 +158,7 @@ export async function featureEngine() {
     const m = marketBySymbol.get(symbol);
     const s = socialBySymbol.get(symbol);
     const b = bullBySymbol.get(symbol);
+    const w = wikiBySymbol.get(symbol);
 
     const relVolume = m ? num(m.rel_volume) : null;
     const prevRelVolume = m ? num(m.prev_rel_volume) : null;
@@ -169,6 +199,15 @@ export async function featureEngine() {
     const authorQuality =
       mentions === null || authors === null || mentions === 0 ? null : authors / mentions;
 
+    const wikiViews = w ? num(w.value) : null;
+    const wikiViewsZscore = w
+      ? zscore(wikiViews, num(w.mean), num(w.sd), num(w.n), WIKI_BASELINE_MIN_OBS)
+      : null;
+    const { breadth, of: breadthOf } = attentionBreadth({
+      mention_zscore: mentionZscore,
+      wiki_views_zscore: wikiViewsZscore,
+    });
+
     const row = [
       symbol,
       ts,
@@ -187,6 +226,11 @@ export async function featureEngine() {
       mentions24h,
       upvotes24h,
       mentionGrowth24h,
+      wikiViews,
+      w ? w.period_date : null,
+      wikiViewsZscore,
+      breadth,
+      breadthOf,
     ];
     values.push(`(${row.map((_, index) => `$${params.length + index + 1}`).join(', ')})`);
     params.push(...row);
@@ -198,7 +242,7 @@ export async function featureEngine() {
   }
 
   await pool.query(
-    `INSERT INTO features (symbol, ts, social_velocity, social_accel, author_quality, mention_zscore, rel_volume_zscore, price_momentum, exhaustion_score, mentions_1h, unique_authors_1h, days_to_cover, price_momentum_1d, price_momentum_2d, mentions_24h, upvotes_24h, mention_growth_24h)
+    `INSERT INTO features (symbol, ts, social_velocity, social_accel, author_quality, mention_zscore, rel_volume_zscore, price_momentum, exhaustion_score, mentions_1h, unique_authors_1h, days_to_cover, price_momentum_1d, price_momentum_2d, mentions_24h, upvotes_24h, mention_growth_24h, wiki_views, wiki_views_date, wiki_views_zscore, attention_breadth, attention_breadth_of)
      VALUES ${values.join(', ')}`,
     params
   );

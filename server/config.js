@@ -41,6 +41,34 @@ export const WATCHLIST = [
   'APLD',
 ];
 
+// Canonical en.wikipedia article titles, resolved and verified at curation time. Titles are stored
+// as redirect TARGETS, never as redirects: the pageviews API attributes views to the title
+// requested, so `Marathon Digital Holdings` measures a redirect stub at 1.9 views/day against
+// `MARA Holdings` at 39.0. An explicit null means "no sensible article exists" and is a decision;
+// a symbol absent from this map is an oversight and is warned about at boot.
+export const WIKI_ARTICLES = {
+  SOFI: 'SoFi',
+  MARA: 'MARA Holdings',
+  RIOT: null,
+  CLSK: null,
+  BITF: null,
+  HIVE: null,
+  IONQ: 'IonQ',
+  RGTI: 'Rigetti Computing',
+  QBTS: 'D-Wave Systems',
+  BBAI: null,
+  SOUN: 'SoundHound AI',
+  LUNR: 'Intuitive Machines',
+  ASTS: 'AST SpaceMobile',
+  RKLB: 'Rocket Lab',
+  PLUG: 'Plug Power',
+  FCEL: 'FuelCell Energy',
+  EOSE: null,
+  OPEN: 'Opendoor',
+  WULF: 'TeraWulf',
+  APLD: null,
+};
+
 export const SUBREDDITS = ['wallstreetbets', 'pennystocks', 'Shortsqueeze'];
 
 export const MAX_DAY_TRADES_PER_5_SESSIONS = 3;

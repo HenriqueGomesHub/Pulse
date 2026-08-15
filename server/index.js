@@ -1,6 +1,6 @@
 import express from 'express';
 import cron from 'node-cron';
-import { MAX_ACTIVE_STRATEGIES, MIN_ACTIVE_STRATEGIES, PORT, WATCHLIST } from './config.js';
+import { MAX_ACTIVE_STRATEGIES, MIN_ACTIVE_STRATEGIES, PORT, WATCHLIST, WIKI_ARTICLES } from './config.js';
 import { pool } from './db/pool.js';
 import { dashboardRoutes } from './routes/dashboard.js';
 import { primaryMentionSource } from './services/mentionSource.js';
@@ -15,6 +15,7 @@ import { stocktwitsIngest } from './workers/stocktwitsIngest.js';
 import { statsRollup } from './workers/statsRollup.js';
 import { strategyRunner } from './workers/strategyRunner.js';
 import { tickerMetaRefresh } from './workers/tickerMetaRefresh.js';
+import { wikiIngest } from './workers/wikiIngest.js';
 import { canFireUnder, seedsFor } from './strategies/seeds.js';
 
 const WINDOW_OPEN_MINUTES = 7 * 60 + 30;
@@ -120,6 +121,17 @@ async function runPipeline(forceMarket) {
   console.log(`[pipeline] tick finished in ${Date.now() - startedAt}ms`);
 }
 
+// An explicit null in WIKI_ARTICLES is a decision and warns nothing; an absent key is an
+// oversight, and this warning is the only way it surfaces — the worker would otherwise skip the
+// symbol silently.
+function warnUnmappedWikiArticles() {
+  for (const symbol of WATCHLIST.filter((s) => !(s in WIKI_ARTICLES))) {
+    console.warn(
+      `[pulse] watchlist symbol ${symbol} has no WIKI_ARTICLES entry, so wikiIngest will not measure it; add a canonical article title verified against the MediaWiki API, or an explicit null if no sensible article exists`
+    );
+  }
+}
+
 async function warnInactiveSeeds() {
   const { rows } = await pool.query(
     "SELECT name, status FROM strategies WHERE generation = 0 AND status <> 'active' ORDER BY id"
@@ -139,6 +151,9 @@ if (process.argv[2] === 'tick') {
   await pool.end();
 } else if (process.argv[2] === 'stats') {
   await statsRollup();
+  await pool.end();
+} else if (process.argv[2] === 'wiki') {
+  await wikiIngest();
   await pool.end();
 } else if (process.argv[2] === 'evolve') {
   await evolution();
@@ -172,6 +187,16 @@ if (process.argv[2] === 'tick') {
     { timezone: 'America/New_York' }
   );
 
+  // 09:00 ET is 13:00 UTC — comfortably past the measured finalization lag for the previous UTC
+  // day, and before the open, so the day's wiki feature is fixed for the whole session.
+  cron.schedule(
+    '0 9 * * *',
+    () => {
+      wikiIngest().catch((err) => console.error('[wikiIngest] run failed', err));
+    },
+    { timezone: 'America/New_York' }
+  );
+
   cron.schedule(
     '0 3 * * 0',
     () => {
@@ -180,11 +205,12 @@ if (process.argv[2] === 'tick') {
     { timezone: 'America/New_York' }
   );
 
+  warnUnmappedWikiArticles();
   await warnInactiveSeeds();
 
   app.listen(PORT, () =>
     console.log(
-      `[pulse] listening on ${PORT}, cron registered for */5 * * * *, 0 * * * *, 0 6 * * * and 0 3 * * 0`
+      `[pulse] listening on ${PORT}, cron registered for */5 * * * *, 0 * * * *, 0 6 * * *, 0 9 * * * and 0 3 * * 0`
     )
   );
 }

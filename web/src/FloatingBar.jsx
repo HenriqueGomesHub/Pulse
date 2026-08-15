@@ -28,7 +28,19 @@ function gateSummary(candidate) {
     .join('. ');
 }
 
+function breadthSummary(candidate) {
+  if (!isNum(candidate.attention_breadth) || !isNum(candidate.attention_breadth_of)) {
+    return 'No attention instrument has a baseline for this ticker yet';
+  }
+  return `${candidate.attention_breadth} of ${candidate.attention_breadth_of} attention instruments elevated`;
+}
+
 function Candidate({ candidate, onOpen }) {
+  const breadth =
+    isNum(candidate.attention_breadth) && isNum(candidate.attention_breadth_of)
+      ? `${candidate.attention_breadth}/${candidate.attention_breadth_of}`
+      : '—';
+
   return (
     <li>
       <button
@@ -36,7 +48,7 @@ function Candidate({ candidate, onOpen }) {
         className="cand"
         onClick={onOpen}
         title={gateSummary(candidate)}
-        aria-label={`${candidate.symbol}, ${candidate.gates_met} of ${candidate.gates_total} entry gates cleared for ${candidate.strategy_name}. ${gateSummary(candidate)}`}
+        aria-label={`${candidate.symbol}, ${candidate.gates_met} of ${candidate.gates_total} entry gates cleared for ${candidate.strategy_name}. ${breadthSummary(candidate)}. ${gateSummary(candidate)}`}
       >
         <span className="cand-top">
           <span className="sym">{candidate.symbol}</span>
@@ -46,6 +58,9 @@ function Candidate({ candidate, onOpen }) {
         </span>
         <span className="cand-bottom">
           <span className="cand-strategy">{candidate.strategy_name}</span>
+          <span className="num cand-breadth" aria-hidden="true">
+            {breadth}
+          </span>
           <span className="cand-gates" aria-hidden="true">
             {candidate.gates.map((gate, index) => (
               <i

@@ -8,12 +8,15 @@ import {
   YAxis,
 } from 'recharts';
 import {
+  BookOpen,
   CalendarDays,
   Clock,
   DollarSign,
+  Eye,
   Flame,
   Gauge,
   Hash,
+  Layers,
   LineChart as LineChartIcon,
   MessageSquare,
   Scissors,
@@ -25,7 +28,7 @@ import { chartColors, tickStyle } from '../chart.js';
 import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
 import { useTheme } from '../theme.jsx';
-import { Empty, ErrorBanner, InlineNum, NoData, Num, Section, Stat } from '../ui.jsx';
+import { Breadth, Empty, ErrorBanner, InlineNum, NoData, Num, Section, Stat } from '../ui.jsx';
 import { isNum, num, price, stamp } from '../format.js';
 
 const decimal = (value) => num(value, 2);
@@ -139,6 +142,147 @@ function Chart({ series }) {
   );
 }
 
+const dayLabel = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'UTC',
+  month: 'short',
+  day: 'numeric',
+});
+
+const utcDay = (value) => dayLabel.format(new Date(`${value}T00:00:00Z`));
+
+function WikiTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const point = payload[0].payload;
+  return (
+    <div className="tooltip">
+      <div>
+        <span>UTC day</span> {utcDay(point.period_date)}
+      </div>
+      <div>
+        <span>Views</span> {isNum(point.wiki_views) ? num(point.wiki_views, 0) : 'not measured'}
+      </div>
+      <div>
+        <span>Last price</span> {isNum(point.price) ? price(point.price) : 'no snapshot'}
+      </div>
+    </div>
+  );
+}
+
+function WikiChart({ series }) {
+  const { theme } = useTheme();
+  const colors = chartColors(theme);
+  const tick = tickStyle(colors);
+  const prices = series.filter((point) => isNum(point.price)).length;
+
+  return (
+    <>
+      <div className="chart">
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+            <CartesianGrid stroke={colors.grid} strokeDasharray="2 3" vertical={false} />
+            <XAxis
+              dataKey="period_date"
+              tickFormatter={utcDay}
+              tick={tick}
+              axisLine={false}
+              tickLine={false}
+              minTickGap={40}
+            />
+            <YAxis
+              yAxisId="views"
+              tickFormatter={(value) => num(value, 0)}
+              tick={tick}
+              axisLine={false}
+              tickLine={false}
+              width={52}
+            />
+            <YAxis
+              yAxisId="price"
+              orientation="right"
+              tickFormatter={(value) => price(value)}
+              tick={tick}
+              axisLine={false}
+              tickLine={false}
+              width={60}
+            />
+            <Tooltip content={<WikiTooltip />} cursor={{ stroke: colors.grid }} />
+            <Line
+              yAxisId="views"
+              type="linear"
+              dataKey="wiki_views"
+              stroke={colors.ink}
+              strokeWidth={1.5}
+              dot={false}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+            <Line
+              yAxisId="price"
+              type="linear"
+              dataKey="price"
+              stroke={colors.muted}
+              strokeWidth={1.25}
+              strokeDasharray="3 3"
+              dot={false}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="caveat">
+        Solid line: daily pageviews, left axis. Dashed line: the last price observed on that UTC
+        day, right axis — a UTC day is not a trading session, so this is not a close.{' '}
+        <InlineNum>{series.length}</InlineNum> days carry a view count,{' '}
+        <InlineNum>{prices}</InlineNum> carry a price.
+      </p>
+    </>
+  );
+}
+
+function WikiSection({ data }) {
+  if (!data.wiki_article) {
+    return (
+      <Empty icon={BookOpen} label="Wikipedia" title="No article is mapped for this ticker.">
+        The mapping is curated rather than guessed, and no sensible English Wikipedia article
+        exists for this company. This instrument is excluded from its attention breadth
+        denominator rather than counted as quiet.
+      </Empty>
+    );
+  }
+
+  return (
+    <>
+      <dl className="stats">
+        <Stat icon={Eye} label="Views">
+          <Num value={data.wiki_views} format={(value) => num(value, 0)} reason="not measured yet" />
+        </Stat>
+        <Stat icon={CalendarDays} label="UTC day measured">
+          {data.wiki_views_date ? (
+            <span className="num">{data.wiki_views_date}</span>
+          ) : (
+            <NoData reason="no daily count has been read yet" />
+          )}
+        </Stat>
+        <Stat icon={Gauge} label="Views z-score">
+          <Num
+            value={data.wiki_views_zscore}
+            format={decimal}
+            reason="fewer than 20 daily observations"
+          />
+        </Stat>
+      </dl>
+      {data.wiki_series.length > 0 ? (
+        <WikiChart series={data.wiki_series} />
+      ) : (
+        <Empty icon={BookOpen} label="Wikipedia" title="No daily counts have landed yet.">
+          The article is mapped, but no pageview rows have been read for it.
+        </Empty>
+      )}
+    </>
+  );
+}
+
 export default function TickerDetail({ symbol, onClose }) {
   const { data, error, loading, updatedAt, refetch } = usePoll(`/api/ticker/${symbol}`);
 
@@ -218,7 +362,18 @@ export default function TickerDetail({ symbol, onClose }) {
               <Stat icon={TrendingUp} label="Price momentum">
                 <Num value={data.price_momentum} format={decimal} reason="not computed" />
               </Stat>
+              <Stat icon={Layers} label="Attention breadth">
+                <Breadth value={data.attention_breadth} of={data.attention_breadth_of} />
+              </Stat>
             </dl>
+          </Section>
+
+          <Section
+            icon={BookOpen}
+            title="Wikipedia attention"
+            note="One observation per UTC day, published by Wikimedia about a day in arrears and held unchanged across that day's ticks. Automated traffic is excluded."
+          >
+            <WikiSection data={data} />
           </Section>
 
           <Section

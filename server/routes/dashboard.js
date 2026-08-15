@@ -1,5 +1,5 @@
 import express from 'express';
-import { SHADOW_SLIPPAGE_PCT_PER_SIDE } from '../config.js';
+import { SHADOW_SLIPPAGE_PCT_PER_SIDE, WIKI_ARTICLES } from '../config.js';
 import { pool } from '../db/pool.js';
 import { describeBlock } from '../strategies/engine.js';
 
@@ -8,6 +8,7 @@ const ACTIVE_SIGNAL_HOURS = 24;
 const SIGNAL_FEED_LIMIT = 200;
 const SHADOW_CLOSED_LIMIT = 25;
 const TICKER_SERIES_HOURS = 168;
+const TICKER_WIKI_SERIES_DAYS = 30;
 const NEAR_SIGNAL_LIMIT = 12;
 
 const isoUtc = (column) => `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
@@ -42,10 +43,12 @@ const WATCHLIST_SQL = `
     GROUP BY t.symbol
   ),
   latest AS (
-    SELECT t.symbol, f.ts, f.mention_zscore, f.social_velocity, f.exhaustion_score
+    SELECT t.symbol, f.ts, f.mention_zscore, f.social_velocity, f.exhaustion_score,
+           f.attention_breadth, f.attention_breadth_of
     FROM tickers t
     CROSS JOIN LATERAL (
-      SELECT ts, mention_zscore, social_velocity, exhaustion_score
+      SELECT ts, mention_zscore, social_velocity, exhaustion_score,
+             attention_breadth, attention_breadth_of
       FROM features fx
       WHERE fx.symbol = t.symbol
       ORDER BY fx.ts DESC
@@ -81,6 +84,8 @@ const WATCHLIST_SQL = `
          f.mention_zscore::float8 AS mention_zscore,
          f.social_velocity::float8 AS social_velocity,
          f.exhaustion_score::float8 AS exhaustion_score,
+         f.attention_breadth::int AS attention_breadth,
+         f.attention_breadth_of::int AS attention_breadth_of,
          COALESCE(sp.points, '[]'::json) AS mention_zscore_sparkline,
          a.max_conviction,
          COALESCE(a.signals, '[]'::json) AS active_signals
@@ -396,7 +401,12 @@ const TICKER_META_SQL = `
          f.mentions_1h::float8 AS mentions_1h,
          f.unique_authors_1h::float8 AS unique_authors_1h,
          f.mentions_24h::float8 AS mentions_24h,
-         f.mention_growth_24h::float8 AS mention_growth_24h
+         f.mention_growth_24h::float8 AS mention_growth_24h,
+         f.wiki_views::float8 AS wiki_views,
+         to_char(f.wiki_views_date, 'YYYY-MM-DD') AS wiki_views_date,
+         f.wiki_views_zscore::float8 AS wiki_views_zscore,
+         f.attention_breadth::int AS attention_breadth,
+         f.attention_breadth_of::int AS attention_breadth_of
   FROM tickers t
   LEFT JOIN LATERAL (
     SELECT price FROM market_snapshots m
@@ -444,11 +454,37 @@ const TICKER_SERIES_SQL = `
   ORDER BY s.ts
 `;
 
+// Daily granularity, kept in its own query and its own chart. `price` is the last price observed
+// on that UTC day, not a close — a UTC day is not an ET session.
+const TICKER_WIKI_SERIES_SQL = `
+  WITH wiki AS (
+    SELECT period_date, value::float8 AS wiki_views
+    FROM attention_snapshots
+    WHERE symbol = $1 AND instrument = 'wikipedia' AND granularity = 'daily'
+    ORDER BY period_date DESC
+    LIMIT $2::int
+  ),
+  daily_price AS (
+    SELECT DISTINCT ON ((m.ts AT TIME ZONE 'UTC')::date)
+           (m.ts AT TIME ZONE 'UTC')::date AS period_date,
+           m.price::float8 AS price
+    FROM market_snapshots m
+    WHERE m.symbol = $1
+    ORDER BY (m.ts AT TIME ZONE 'UTC')::date, m.ts DESC
+  )
+  SELECT to_char(w.period_date, 'YYYY-MM-DD') AS period_date, w.wiki_views, p.price
+  FROM wiki w
+  LEFT JOIN daily_price p USING (period_date)
+  ORDER BY w.period_date
+`;
+
 const NEAR_SIGNAL_FEATURES_SQL = `
   SELECT t.symbol,
          t.name,
          p.price::float8 AS price,
          f.ts AS features_ts,
+         f.attention_breadth::int AS attention_breadth,
+         f.attention_breadth_of::int AS attention_breadth_of,
          json_build_object(
            'social_velocity', f.social_velocity::float8,
            'social_accel', f.social_accel::float8,
@@ -682,15 +718,24 @@ dashboardRoutes.get(
   '/ticker/:symbol',
   route(async (req, res) => {
     const symbol = String(req.params.symbol).toUpperCase();
-    const [meta, series] = await Promise.all([
+    const [meta, series, wikiSeries] = await Promise.all([
       pool.query(TICKER_META_SQL, [symbol]),
       pool.query(TICKER_SERIES_SQL, [symbol, TICKER_SERIES_HOURS]),
+      pool.query(TICKER_WIKI_SERIES_SQL, [symbol, TICKER_WIKI_SERIES_DAYS]),
     ]);
     if (meta.rows.length === 0) {
       res.status(404).json({ error: `no ticker "${symbol}" on the watchlist` });
       return;
     }
-    res.json({ ...meta.rows[0], series_hours: TICKER_SERIES_HOURS, series: series.rows });
+    res.json({
+      ...meta.rows[0],
+      series_hours: TICKER_SERIES_HOURS,
+      series: series.rows,
+      // Null distinguishes "deliberately unmapped" from "mapped but not yet measured".
+      wiki_article: WIKI_ARTICLES[symbol] ?? null,
+      wiki_series_days: TICKER_WIKI_SERIES_DAYS,
+      wiki_series: wikiSeries.rows,
+    });
   })
 );
 
@@ -717,6 +762,8 @@ dashboardRoutes.get(
             name: ticker.name,
             price: ticker.price,
             features_ts: ticker.features_ts,
+            attention_breadth: ticker.attention_breadth,
+            attention_breadth_of: ticker.attention_breadth_of,
             strategy_id: strategy.id,
             strategy_name: strategy.name,
             side: strategy.params.side,
@@ -729,6 +776,8 @@ dashboardRoutes.get(
             name: ticker.name,
             price: ticker.price,
             features_ts: ticker.features_ts,
+            attention_breadth: ticker.attention_breadth,
+            attention_breadth_of: ticker.attention_breadth_of,
             strategy_id: strategy.id,
             strategy_name: strategy.name,
             side: strategy.params.side,

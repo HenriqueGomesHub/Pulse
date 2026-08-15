@@ -506,6 +506,13 @@ a:hover {
   white-space: nowrap;
 }
 
+.cand-breadth {
+  font-size: 11px;
+  color: var(--text-2);
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
 .cand-gates {
   display: inline-flex;
   gap: 3px;
