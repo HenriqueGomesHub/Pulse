@@ -10,6 +10,360 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 | 3 — dashboard | **PASSED** | 2026-08-11 |
 | 4 — full strategy set + stats | **built; gate PARTIAL** — live conviction lifecycle deferred to next open | 2026-08-11 |
 | 5 — evolution | **built; gate PARTIAL** — inherits phase 4's deferred live lifecycle | 2026-08-11 |
+| A — attention: Wikipedia | **PROPOSED — halted for rulings** | 2026-08-14 |
+
+---
+
+## MULTI-INSTRUMENT ATTENTION — strategic frame for phases A–D
+
+Recorded by owner instruction 2026-08-14 as the frame governing all four phases, so a later
+reader does not mistake any single phase for the whole intent.
+
+**Attention becomes a multi-instrument measurement.** Each instrument gets its own feature family
+in its own columns and is **never blended** with another, per the instrument-seam ruling of
+2026-08-12 (which nulled a month of Stocktwits-derived values masquerading as mention features)
+and the mention-precedence ruling of the same date (one primary source, never summed).
+
+A derived `attention_breadth` feature counts how many independent instruments are elevated for a
+ticker at once. The purpose is discrimination, not amplification: **cross-source agreement
+separates organic attention from manufactured**. A pump ring inflates one channel; it does not
+inflate four. Breadth is the measurement that makes that difference visible.
+
+Planned instruments: **wiki** (phase A, this one), **news velocity** (B), **search trends** (C),
+plus the existing **mentions** family.
+
+**No strategy, seed, or conviction change in any of these phases.** Instruments accumulate and are
+measured first. Wiring any of them into a trading decision is a separate future decision taken
+after calibration review. **Evolution stays blind to the new features until that decision** — they
+must not enter `CONDITION_SCHEMA`'s vocabulary yet.
+
+That blindness is structural rather than remembered, and it is worth naming how: `evolution.js:32`
+derives `REPLAY_FEATURE_COLUMNS` from `engine.js`'s `VOCABULARY`, and `engine.js`'s `isMet()`
+throws on any feature outside it. So a `features` column that is not in `VOCABULARY` is
+**unreadable by the replay and unusable by any strategy**, hand-written or evolved. Adding the
+columns without touching `VOCABULARY` is the whole mechanism; nothing else is required, and
+nothing else may be done.
+
+---
+
+## PHASE A — WIKIPEDIA PAGEVIEWS — PROPOSAL, HALTED FOR RULINGS
+
+Three decisions were asked for before implementation. All three are answered below with measured
+evidence rather than assumption. **Nothing has been implemented. No file outside this log has been
+touched.**
+
+### Evidence gathered before proposing
+
+Read-only probes against public endpoints, run 2026-08-14 22:15 ET (2026-08-15 02:15 UTC):
+
+- **MediaWiki API** (`action=query&redirects=1`) for existence and canonical title of 26 candidate
+  article names, cross-checked against the independent REST `page/summary` endpoint. The two
+  agreed on every title.
+- **Wikimedia REST pageviews API** for daily counts over 2026-07-01 → 2026-08-14, nine articles.
+
+### DECISION 1 — ticker → article mapping
+
+**Proposal: a curated, verified mapping table in `server/config.js`, adjacent to `WATCHLIST`, with
+explicit `null` for tickers that have no sensible article. No fuzzy matching at any point, ever.**
+
+The evidence that fuzzy or convenient matching is not merely inelegant but actively wrong, all
+measured, mean daily views 2026-08-01 → 2026-08-13:
+
+| requested title | mean views/day | what it actually measures |
+|---|---|---|
+| `Open` | 21.4 | **the wrong page entirely** — the ticker OPEN's namesake word |
+| `Opendoor` | 152.2 | the company |
+| `Marathon_Digital_Holdings` | 1.9 | a **redirect stub**, not the article |
+| `MARA_Holdings` | 39.0 | the article the redirect points at |
+| `SoundHound` | 36.3 | a redirect stub |
+| `SoundHound_AI` | 78.7 | the article |
+
+Two distinct traps, both producing plausible non-zero numbers rather than errors:
+
+1. **The "Open" problem the brief names.** A wrong page yields 21 views/day — a number that looks
+   like data, z-scores like data, and is about a dictionary word.
+2. **Redirects are counted as their own pages.** The pageviews API attributes views to the *title
+   requested*, not the target. `Marathon Digital Holdings` loses **95%** of the real signal;
+   `SoundHound` loses 54%. Storing a human-plausible title that happens to be a redirect silently
+   measures a stub. **The mapping therefore stores canonical targets, resolved and verified at
+   curation time.**
+
+**The proposed table — 13 mapped, 7 explicitly NULL.** Every "mapped" row was confirmed to exist
+by two independent endpoints; every NULL row was confirmed absent by both, and a title search
+found no differently-named article for it.
+
+| ticker | article | note |
+|---|---|---|
+| SOFI | `SoFi` | |
+| MARA | `MARA Holdings` | `Marathon Digital Holdings` redirects here; canonical stored |
+| IONQ | `IonQ` | |
+| RGTI | `Rigetti Computing` | |
+| QBTS | `D-Wave Systems` | **needs your eye** — see below |
+| SOUN | `SoundHound AI` | `SoundHound` redirects here; canonical stored |
+| LUNR | `Intuitive Machines` | |
+| ASTS | `AST SpaceMobile` | |
+| RKLB | `Rocket Lab` | |
+| PLUG | `Plug Power` | |
+| FCEL | `FuelCell Energy` | |
+| OPEN | `Opendoor` | the case the brief names; **not** `Open` |
+| WULF | `TeraWulf` | |
+| RIOT | **NULL** | no article; `Riot Platforms` and `Riot Blockchain` both absent |
+| CLSK | **NULL** | no article |
+| BITF | **NULL** | no article (also delisted) |
+| HIVE | **NULL** | no article; `HIVE Digital Technologies` and `Hive Blockchain` both absent |
+| BBAI | **NULL** | no article |
+| EOSE | **NULL** | no article; `Eos Energy Enterprises` and `Eos Energy` both absent |
+| APLD | **NULL** | no article |
+
+**The one judgement call: QBTS → `D-Wave Systems`.** The ticker is D-Wave Quantum Inc.;
+`D-Wave Quantum` does not exist as an article, and `D-Wave Systems` — which does, at ~149
+views/day — is the operating company the public writes and reads about. This is the only row where
+the article and the listed entity are not the same legal person. It is a defensible mapping and it
+is also the only row I would not object to you striking to NULL. **Your call, explicitly.**
+
+**Seven NULLs is not a defect.** These are small caps without encyclopedia articles, and NULL is
+the honest answer: no instrument reading exists for them. Under the breadth denominator rule
+(decision 3 below) they simply carry a smaller denominator, which is exactly the distinction the
+brief asks breadth to preserve.
+
+**How new watchlist tickers get mapped.** The map lives beside `WATCHLIST` in the same file, so a
+symbol added to one is visibly missing from the other. At boot, `index.js` warns — in the same
+shape as the existing gen-0-seed warning — for **every `WATCHLIST` symbol with no key in the map**.
+An explicit `null` is a decision and warns nothing; an **absent key** is an oversight and warns
+loudly. The worker then skips unmapped symbols, so the warning is the only way the omission
+surfaces — never a silent skip. Adding a mapping requires re-running the curation-time existence
+check; runtime never searches, never guesses, never resolves a redirect.
+
+### DECISION 2 — storage: a new `attention_snapshots` table
+
+**Proposal: a new table. Not `social_snapshots` with `source = 'wikipedia'`.**
+
+The 26-sites analysis asked which choice makes cross-contamination *structurally* impossible
+rather than conditionally avoided. Applied here, the count is smaller but the answer is stronger,
+and for a different reason than the shadow-book case.
+
+`social_snapshots` is touched at **7 sites** — 4 reads (`mentionSource.js:13`,
+`apewisdomIngest.js:14`, `featureEngine.js:47`, `featureEngine.js:82`) and 3 writes. Every one of
+the 4 reads already filters on `source`, so a `wikipedia` row would not be read *today*. On the
+shadow-book's own argument that is a weak case for separation — 4 remembered predicates, not 26.
+
+**The decisive argument is granularity, not filtering.** `social_snapshots.ts` is a `TIMESTAMPTZ`
+recording *when we observed*, at a 5-minute cadence. A Wikimedia count is a **UTC-day total**, and
+it has no observation timestamp at all — it has a coverage *date*. Writing it into a `TIMESTAMPTZ`
+column stamps a daily aggregate with an instant, and from that moment on the row **looks
+intra-day to every reader and every query**. That is the ApeWisdom 24-hour-window lesson one level
+up: there, a 24h count was nearly written into `mentions_1h`, and the ruling was semantic honesty
+via a separate column rather than reinterpretation. Here the same reasoning applies to the *time
+axis itself*.
+
+The proposed shape makes the mistake unrepresentable rather than merely unlikely:
+
+```sql
+CREATE TABLE attention_snapshots (
+  id          BIGSERIAL PRIMARY KEY,
+  symbol      TEXT NOT NULL REFERENCES tickers(symbol),
+  instrument  TEXT NOT NULL,           -- 'wikipedia'
+  period_date DATE NOT NULL,           -- the UTC day the count covers
+  granularity TEXT NOT NULL,           -- 'daily'
+  value       NUMERIC NOT NULL,
+  fetched_at  TIMESTAMPTZ NOT NULL,
+  raw         JSONB,
+  UNIQUE (symbol, instrument, period_date)
+);
+```
+
+- **`period_date` is a `DATE`.** A daily observation cannot masquerade as intra-day because the
+  column has no room for a time of day. The type enforces what a filter would only remember.
+- **The `UNIQUE` key makes the 30-day backfill idempotent**, and makes a second run of the same day
+  a no-op rather than a duplicate observation inflating the baseline — the exact failure the
+  ApeWisdom dedup ruling exists to prevent, here solved by the schema instead of by a comparison.
+- **Column semantics stay honest in both tables.** `social_snapshots`' columns are
+  `mentions_1h`/`mentions_24h`/`upvotes_24h`/`bull_ratio` — mention-shaped. Wiki views are none of
+  those. Putting them there means either a new column meaningful for exactly one source, or
+  crowbarring views into `mentions_24h`, which is blending and is forbidden outright.
+- **It is the table phases B and C also need.** News velocity and search trends are non-mention
+  instruments with their own periods; `instrument` and `granularity` carry them without a schema
+  change. Nothing speculative is added for them now — those two columns are required by the wiki
+  case on its own.
+
+A query that does not name `attention_snapshots` cannot read one, and none of the 7 existing
+`social_snapshots` sites names it.
+
+### DECISION 3 — granularity honesty
+
+**Measured, not assumed.** At 22:15 ET on 2026-08-14 — 2h15m after UTC day 2026-08-14 closed —
+the API served data through **2026-08-13** and returned an explicit 404 for 2026-08-14. So the lag
+is real and exceeds two hours past day close. Nine articles returned 44 of 44 requested days with
+no gaps.
+
+Live distributions over those 44 days (`all-access`, `agent=user`):
+
+| article | mean | sd | max |
+|---|---|---|---|
+| Rocket Lab | 792.2 | 215.9 | 1594 |
+| AST SpaceMobile | 350.5 | 121.7 | 798 |
+| IonQ | 201.7 | 57.4 | 338 |
+| D-Wave Systems | 148.8 | 48.2 | 324 |
+| Opendoor | 144.0 | 54.2 | 362 |
+| TeraWulf | 88.1 | **91.7** | **561** |
+| SoundHound AI | 67.7 | 30.2 | 214 |
+| Plug Power | 52.8 | 23.1 | 128 |
+| MARA Holdings | 42.4 | 15.1 | 109 |
+
+These are genuine continuous distributions with real spikes — TeraWulf's sd exceeds its mean and
+its max is 6.4× it. Unlike the zero-inflated mention baseline that forced the H4 floor, **no
+denominator floor is proposed here**, on the same evidentiary basis that left `rel_volume_zscore`
+unfloored: the spread is comparable to the mean and there are no zero rows. Revisit only if a
+mapped article turns out to be near-zero-traffic.
+
+**The proposed feature family — one observation per ticker per day, and it never pretends
+otherwise:**
+
+- **`wiki_views`** — the count for the most recent finalized UTC day available, normally
+  yesterday.
+- **`wiki_views_date`** — **the UTC date that count is for.** This column is the honesty
+  mechanism. Wikimedia is occasionally late, and without it a reader cannot tell whether the value
+  describes D−1 or D−2. The precedent is `tickers.short_interest_settlement_date`, which exists for
+  exactly this reason and is already surfaced on the ticker sheet. The worker never assumes which
+  date it received; it stores what came back and the feature reports it.
+- **`wiki_views_zscore`** — over a trailing **30 daily observations**, with the baseline window
+  defined as the 30 `period_date`s **strictly before** the scored day. Anchoring the window to the
+  latest available date rather than to `now()` keeps it **bit-stable across every tick of a day**,
+  independent of clock or timezone.
+
+**No intra-day precision is fabricated anywhere.** `featureEngine` runs every 5 minutes and will
+write these three values into every `features` row it produces, but the underlying daily rows do
+not change during a day, so the value is **carried forward unchanged by construction, not by a
+carry-forward rule that could drift**. The same inputs produce the same number on every tick.
+
+**One honesty note to record now rather than discover later: a UTC day is not an ET session.** UTC
+day D spans 20:00 ET on D−1 through 20:00 ET on D, straddling two sessions. `wiki_views` is a
+UTC-day count and must never be described in the UI as "yesterday's session".
+
+**Baseline excludes the scored observation.** This deliberately departs from the mention family,
+where "z-score baselines include the scored observation" is a recorded LOW deferred defect. A new
+family should not be born carrying a known defect for the sake of symmetry. Say the word if you
+would rather have parity.
+
+**Minimum history: 20 daily observations before `wiki_views_zscore` is non-NULL** — the same value
+as `MENTION_BASELINE_MIN_OBS`, and for the same derived reason: a source may produce the z-score
+only once it has enough observations for the z-score to mean anything.
+
+**When it becomes trustworthy: the first daily run, because of the backfill.** With 30 real
+historical days loaded on run one, the z-score is non-NULL and statistically meaningful
+immediately — there is no ~7-day quiet period as there was for mentions. If the backfill is
+declined, the first non-NULL arrives on day 20 and the family is not trustworthy until roughly day
+30.
+
+### Why the 30-day backfill is legitimate here and was not for `days_to_cover`
+
+Both reconstruct history. They are not the same act, and the distinction is the whole reason one
+is proposed and the other was refused.
+
+- **`days_to_cover` was refused** because `tickers.days_to_cover` holds **one current value**.
+  Writing it onto past ticks stamps *today's* short interest onto history — a value that was not
+  true then, invented by projecting the present backwards. That is look-ahead.
+- **Wikimedia pageviews are a genuine historical record.** The API returns what was actually
+  measured on each past day, per day, and returns it identically whenever it is asked. Loading
+  2026-07-15's count into a row whose `period_date` is 2026-07-15 records what was true on
+  2026-07-15. Nothing is projected and nothing is inferred.
+
+The z-score computed on day D uses only days D−30 … D−1, so there is no look-ahead on the forward
+path either.
+
+**`features` rows are NOT backfilled — only `attention_snapshots`.** Historical `features` rows
+keep NULL in all four new columns and are never revisited. This follows the instrument-seam
+precedent directly: the honest statement about a past tick is that this instrument did not exist
+then. NULL blocks and reads as "no data"; a retro-filled number would read as a measurement the
+system never had.
+
+### IMPLEMENTATION SKETCH — for approval alongside the rulings
+
+**4. `server/workers/wikiIngest.js`, daily cron `0 9 * * *` America/New_York.**
+
+09:00 ET is 13:00 UTC — **13 hours after UTC day D−1 closed**, well past the observed lag, and
+**30 minutes before the market open**, so the day's value is fixed before the session and carried
+unchanged through every tick of it. The worker requests a **trailing 35-day window** every run
+rather than a single date, so a late-publishing day is picked up by the next run automatically and
+the `UNIQUE` key absorbs the overlap. First run therefore *is* the backfill; no separate one-off
+script.
+
+```
+GET https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article
+    /en.wikipedia.org/all-access/user/{article}/daily/{YYYYMMDD}/{YYYYMMDD}
+```
+
+`agent=user` excludes bots and spiders — this is an attention measurement, and automated traffic is
+not attention. Plain `fetch`, no new dependency. `User-Agent` identifying Pulse, the same string
+`apewisdomIngest` already sends. One request per mapped ticker, 13 per day. Warn-and-skip **per
+ticker** on failure, so one bad article cannot cost the run. Raw payload preserved in `raw` JSONB.
+A day absent from the response is stored as **absent, never as zero** — Wikimedia omits rather than
+reports zeros, so absence is unknown, not silence, and the insufficient-data-NULL rule applies.
+
+**5. `featureEngine`:** a `WIKI_SQL` alongside `MARKET_SQL` / `MENTION_SQL` / `BULL_RATIO_SQL`,
+populating `wiki_views`, `wiki_views_date`, `wiki_views_zscore`. Source-isolated — it reads only
+`attention_snapshots` and touches no mention column. NULL-honest throughout.
+
+**6. `attention_breadth` by registration, not by formula.** A new
+`server/services/attentionInstruments.js`:
+
+```js
+export const ATTENTION_INSTRUMENTS = Object.freeze([
+  Object.freeze({ name: 'mentions',  zscoreFeature: 'mention_zscore',    elevatedAbove: 2 }),
+  Object.freeze({ name: 'wikipedia', zscoreFeature: 'wiki_views_zscore', elevatedAbove: 2 }),
+]);
+```
+
+`featureEngine` computes, per symbol, from the bag it already holds:
+
+- **eligible** = instruments whose z-score is non-NULL
+- **`attention_breadth`** = eligible instruments with z > their threshold
+- **`attention_breadth_of`** = count of eligible instruments — **stored alongside**, so 1/1 and
+  1/4 are distinguishable exactly as the brief requires
+- **both NULL when eligible is 0** — never 0/0, which would read as "measured, nothing elevated"
+  when the truth is "nothing was measured"
+
+Phases B and C add an instrument by appending one frozen object. No formula is edited, and
+nothing in `featureEngine` counts instruments by hand.
+
+Note that **breadth's `> 2` is a measurement threshold, not a trading gate**, and deliberately
+differs from seed #1's `mention_zscore > 3`. Nothing reads breadth except the dashboard.
+
+**7. Dashboard, read-only, slotted into existing surfaces — no layout redesign.**
+
+- **Ticker detail sheet:** a new `Section` in the established pattern, holding `wiki_views`,
+  `wiki_views_date` and `wiki_views_zscore` as `Stat`s, plus a **separate daily chart** — 30 daily
+  points, views against last-observed daily price. Separate, not merged into the existing 7-day
+  hourly chart: drawing a daily series on an hourly axis is the same category error as storing it
+  in a `TIMESTAMPTZ`, committed visually.
+- **Watchlist and near-signals bar:** breadth rendered `n/m`, em dash with a screen-reader reason
+  when NULL.
+
+**Migration `009_attention_snapshots.sql`**: the new table plus five `features` columns
+(`wiki_views`, `wiki_views_date`, `wiki_views_zscore`, `attention_breadth`,
+`attention_breadth_of`). **`VOCABULARY`, `CONDITION_SCHEMA`, seeds, evolution and every trading
+path are untouched.**
+
+### VERIFICATION PLAN — before the gate
+
+1. **Mapping table reviewed by you before the first fetch.** This is the halt.
+2. 30-day backfill lands with real counts for all mapped tickers; row counts and a sample of
+   values checked against the figures in this proposal.
+3. `wiki_views_zscore` non-NULL where history suffices, NULL where it does not, checked per
+   ticker rather than in aggregate.
+4. `attention_breadth` computing with honest denominators — including at least one ticker with a
+   NULL mention z-score, to confirm the denominator shrinks rather than the numerator lying.
+5. One full daily cycle observed **from Railway**, not locally — the single-writer rule holds.
+6. Dashboard rendering both families, NULL states included.
+7. Confirm by grep that `VOCABULARY` is unchanged and that no new feature name appears in
+   `seeds.js`, `engine.js` or `evolution.js`.
+
+### HALT — awaiting rulings on 1, 2 and 3
+
+Specifically: **the mapping table** (particularly QBTS → `D-Wave Systems`, and whether any of the
+seven NULLs should instead be a title I did not find), **the new table over `social_snapshots`**,
+**the daily feature shape** including `wiki_views_date` and the excluded-scored-observation
+baseline, and **the 09:00 ET cron hour**.
 
 ---
 
