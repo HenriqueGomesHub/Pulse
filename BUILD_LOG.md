@@ -358,12 +358,136 @@ path are untouched.**
 7. Confirm by grep that `VOCABULARY` is unchanged and that no new feature name appears in
    `seeds.js`, `engine.js` or `evolution.js`.
 
-### HALT — awaiting rulings on 1, 2 and 3
+### RULINGS — all four ratified 2026-08-14, implementation proceeding
 
-Specifically: **the mapping table** (particularly QBTS → `D-Wave Systems`, and whether any of the
-seven NULLs should instead be a title I did not find), **the new table over `social_snapshots`**,
-**the daily feature shape** including `wiki_views_date` and the excluded-scored-observation
-baseline, and **the 09:00 ET cron hour**.
+**1. Mapping** — approved as curated, including all seven NULLs. **QBTS → `D-Wave Systems`
+approved, with the asymmetry recorded**: the article measures the operating company under its
+household name, which is the entity retail attention attaches to. That attention is what we are
+measuring, so it is the *right* page even though it is not the listed shell's name. **Where a
+future mapping has a genuinely ambiguous split — two entities sharing attention — NULL it rather
+than guess.**
+
+**2. Storage** — `attention_snapshots` approved, and the owner recorded that the argument matters
+more than the answer: *invariants belong in types, not in discipline.* `period_date DATE` makes
+intra-day masquerade unrepresentable rather than filtered-against, and the `UNIQUE` key makes the
+backfill idempotent by schema rather than by remembered comparison. **That is the direction to
+keep moving in.**
+
+**3. Granularity** — approved: daily family, no denominator floor on the measured evidence (the
+same evidentiary standard that left `rel_volume_zscore` unfloored), carried forward across the
+day's ticks.
+
+**4. Cron at 09:00 ET** — approved.
+
+**Both beyond-brief additions stand, neither struck.** `wiki_views_date` because *silent staleness
+is how instruments lie politely*, on the settlement-date precedent. And the excluded-scored-
+observation baseline is ratified as **the correct convention going forward: new feature families
+adopt it, and the mention family's recorded LOW defect gets fixed when that family is next
+touched rather than inherited for symmetry. Consistency with a known defect is not consistency
+worth having.**
+
+---
+
+## PHASE A — BUILT AND VERIFIED 2026-08-14
+
+### THE REDIRECT TRAP — the finding of the day, binding on phases B, C and D
+
+**A Wikipedia redirect is counted as its own page.** The pageviews API attributes views to the
+*title requested*, never to the target the title resolves to. A human-plausible article name that
+happens to be a redirect therefore returns a real, plausible, non-zero number that is a small
+fraction of the truth:
+
+| requested title | mean views/day | loss |
+|---|---|---|
+| `Marathon Digital Holdings` → redirect | 1.9 | **95%** |
+| `MARA Holdings` → article | 39.0 | — |
+| `SoundHound` → redirect | 36.3 | **54%** |
+| `SoundHound AI` → article | 78.7 | — |
+
+This is the failure class this build exists to catch: **not an error, but a plausible number from
+the wrong instrument** — the same shape as the Stocktwits-derived mention columns nulled at the
+instrument seam, and the `days_to_cover` backfill that was refused. A z-score computed on a
+redirect stub would look entirely healthy and would be measuring a redirect page.
+
+Beside it sits the ticker-name trap the brief anticipated: `Open` returns 21.4 views/day of
+dictionary-word traffic against `Opendoor`'s 152.2.
+
+**The rule for every future instrument mapping, phases B/C included: resolve to canonical targets
+and verify each one at curation time against two independent endpoints. Never fuzzy-match, never
+resolve at runtime, and NULL anything genuinely ambiguous.** The mapping in `config.js` stores
+canonical targets only, and every one of the 20 entries was confirmed — 13 existing articles, 7
+confirmed absent — by both the MediaWiki `action=query` API and the REST `page/summary` endpoint.
+
+### A second finding, from my own defect: the end-boundary 404
+
+The first implementation requested a window ending **today**, a UTC day that by construction
+cannot have data yet. Wikimedia's response to an end boundary with no data is **404 for the entire
+range** — and it does this *inconsistently between articles*. On the first run, twelve articles
+returned the window happily with the empty day simply absent while `Intuitive Machines` 404'd and
+lost its whole 35-day history behind a per-ticker warn-and-skip. After moving the boundary to
+D−1, the next run reproduced it on a *different* article: `MARA Holdings` 404'd where eleven
+others succeeded.
+
+So the boundary is genuinely flaky on Wikimedia's side, not merely mis-chosen. `fetchDaily` now
+steps the end boundary back one day when the range 404s, which costs one day of freshness and
+recovers the other 34 rather than losing the ticker for the day. MARA's window visibly ends a day
+earlier in the data as a result, which is the honest record of what happened.
+
+**Worth naming plainly: the warn-and-skip that the brief specified is what made this survivable
+and also what made it nearly invisible.** A per-ticker skip degrades gracefully, and a graceful
+degradation that nobody reads is indistinguishable from success. It was caught only because the
+run log names the skipped ticker.
+
+### Verification
+
+**Backfill.** 443 daily rows across 13 mapped tickers, 34 days each (MARA 35, from the
+boundary step-back), all `granularity = 'daily'`, all carrying raw JSONB, zero NULL payloads.
+Values cross-check exactly against the independent probe taken during the proposal: IONQ 228,
+RKLB 691, ASTS 325, PLUG 64, OPEN 180, WULF 92, QBTS 148, SOUN 43, MARA 38 — nine exact matches.
+
+**Z-scores hand-verified.** Every one of the 13 stored `wiki_views_zscore` values was reproduced
+from the raw rows by an independent query, with `n = 30` for all 13 — confirming the baseline is
+the 30 observations **strictly before** the scored day, scored observation excluded as ratified:
+
+| symbol | views | baseline mean | baseline sd | z |
+|---|---|---|---|---|
+| LUNR | 171 | 124.767 | 31.840 | **1.452** |
+| WULF | 92 | 68.433 | 20.612 | **1.143** |
+| OPEN | 180 | 154.233 | 60.046 | 0.429 |
+| IONQ | 228 | 209.667 | 57.754 | 0.317 |
+| SOUN | 43 | 68.233 | 34.655 | −0.728 |
+
+**Breadth with honest denominators, demonstrated on the first run.** On the same tick, HIVE
+carried **1/1** (mention z 2.30 elevated; no Wikipedia article, so that instrument is excluded
+from the denominator rather than counted as quiet) while WULF carried **1/2** (mention z 2.45
+elevated, wiki z 1.143 not). The seven unmapped tickers all carry a denominator of 1 and the
+thirteen mapped ones a denominator of 2. **1/1 and 1/2 are visibly different facts, which is the
+whole point of storing the denominator.**
+
+Edge cases exercised directly: both elevated → 2/2; nothing measured → NULL/NULL, never 0/0; a
+z-score of exactly 2.0 → not elevated, since the threshold is strictly `> 2`.
+
+**Evolution blindness confirmed by grep**, not by memory: `server/strategies/` and
+`evolution.js` contain zero references to `wiki`, `attention_breadth` or `attention_snapshots`.
+`VOCABULARY` is unchanged, so `REPLAY_FEATURE_COLUMNS` cannot select the new columns and
+`engine.js` would throw on any strategy that named one.
+
+**No retro-fill.** 18,280 historical `features` rows, **0** carrying `wiki_views`. Only
+`attention_snapshots` was backfilled — the instrument-seam precedent holds.
+
+**A registration guard was added beyond the proposal.** `attentionBreadth` throws if a registered
+instrument supplies no z-score, rather than silently shrinking the denominator. This is the same
+silent-omission shape as the replay's feature list before it was derived from `VOCABULARY`, and
+the same remedy: fail loudly. Only a registration mistake can trigger it, never data.
+
+`npm test` 26/26, `npm run build` clean.
+
+### One supervised local write, recorded
+
+`featureEngine` was run once locally to verify the write path, producing one extra set of 20
+`features` rows outside Railway's cadence. This is a supervised verification run under the
+single-writer rule, not a background process — recorded here so the extra tick is not later read
+as a duplicate-writer incident. All other verification was read-only.
 
 ---
 
