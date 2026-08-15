@@ -434,9 +434,21 @@ recovers the other 34 rather than losing the ticker for the day. MARA's window v
 earlier in the data as a result, which is the honest record of what happened.
 
 **Worth naming plainly: the warn-and-skip that the brief specified is what made this survivable
-and also what made it nearly invisible.** A per-ticker skip degrades gracefully, and a graceful
-degradation that nobody reads is indistinguishable from success. It was caught only because the
-run log names the skipped ticker.
+and also what made it nearly invisible.** It was caught only because the run log happens to name
+the skipped ticker. The principle, recorded by owner instruction as binding on every warn-and-skip
+in the system:
+
+> **A graceful degradation nobody reads is indistinguishable from success.**
+
+Every external source in this build degrades the same way — Reddit, Stocktwits, ApeWisdom, FINRA
+and now Wikipedia all warn and skip. Each can therefore fail continuously while the system looks
+healthy, and the only thing between that and a silent months-long outage is somebody reading a log
+line.
+
+**Candidate for the System Health sheet, deliberately NOT built in this phase:** a per-source
+**last-success timestamp**, so degradations are *read* rather than merely logged. A source that
+last succeeded four days ago should be visible on a surface someone actually opens, not inferable
+from scrollback. Recorded here as the next natural home for this lesson.
 
 ### Verification
 
@@ -475,12 +487,44 @@ z-score of exactly 2.0 → not elevated, since the threshold is strictly `> 2`.
 **No retro-fill.** 18,280 historical `features` rows, **0** carrying `wiki_views`. Only
 `attention_snapshots` was backfilled — the instrument-seam precedent holds.
 
-**A registration guard was added beyond the proposal.** `attentionBreadth` throws if a registered
-instrument supplies no z-score, rather than silently shrinking the denominator. This is the same
-silent-omission shape as the replay's feature list before it was derived from `VOCABULARY`, and
-the same remedy: fail loudly. Only a registration mistake can trigger it, never data.
+### Two additions beyond the ratified scope — RATIFIED RETROACTIVELY 2026-08-14
+
+Both were flagged rather than slipped in, and both were approved after the fact.
+
+**1. `attentionBreadth` throws when a registered instrument supplies no z-score**, rather than
+silently shrinking the denominator. Owner reasoning as ratified: *a silently shrinking denominator
+is the replay-feature-list failure reborn, and loud beats graceful there.* Only a registration
+mistake can trigger it, never data — so phases B and C cannot half-register an instrument and get
+a quietly wrong breadth.
+
+**2. `wiki_article` is exposed on the ticker endpoint**, so the UI can say "no article is mapped
+for this ticker" instead of "no data". Ratified as *exactly the honesty distinction*: deliberately
+unmapped and not-yet-measured are different facts, and the seven NULL tickers are the former.
 
 `npm test` 26/26, `npm run build` clean.
+
+### GATE HELD — the daily cycle has never run from Railway
+
+Everything above was verified against production, but `wikiIngest` itself has only ever been
+invoked by hand. The `0 9 * * *` ET cron has not yet fired once. **Until it has, the daily cycle
+is unproven and the gate stays open.**
+
+A one-time cloud routine is scheduled for **2026-08-15 13:20 UTC** (09:20 ET, twenty minutes after
+the cron) to verify: the cron fired, a row for 2026-08-14 landed for each of the 13 mapped
+tickers, `wiki_views_date` rolled forward, and the z-scores updated on that day's ticks. It writes
+its verdict here.
+
+**It is instructed to distinguish two failures that look identical from the outside** — the cron
+not firing, versus the cron firing while Wikimedia had not yet finalized 2026-08-14, which the
+boundary step-back renders as "nothing new landed". It separates them by querying Wikimedia
+directly for that date across several articles.
+
+**A framing correction to carry forward: the "~2h15m" figure is a LOWER BOUND on the finalization
+lag, never an estimate of it.** All that was established is that 2 hours 15 minutes after UTC day
+2026-08-14 closed, the day was not yet served. No upper bound was ever measured, and the 09:00 ET
+hour was chosen for margin rather than from a known distribution. If the scheduled check finds the
+day still unfinalized at 13:00 UTC — 13 hours after close — then 09:00 ET is too early and the
+hour moves.
 
 ### One supervised local write, recorded
 
