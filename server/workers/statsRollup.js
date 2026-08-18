@@ -84,5 +84,7 @@ const ROLLUP_SQL = `
 
 export async function statsRollup() {
   const { rowCount } = await pool.query(ROLLUP_SQL);
-  console.log(`[statsRollup] wrote ${rowCount} strategy_stats rows`);
+  const summary = `wrote ${rowCount} strategy_stats rows`;
+  console.log(`[statsRollup] ${summary}`);
+  return summary;
 }

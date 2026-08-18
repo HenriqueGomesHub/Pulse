@@ -10,6 +10,7 @@ const SHADOW_CLOSED_LIMIT = 25;
 const TICKER_SERIES_HOURS = 168;
 const TICKER_WIKI_SERIES_DAYS = 30;
 const NEAR_SIGNAL_LIMIT = 12;
+const SUMMARY_SIGNAL_LIMIT = 20;
 
 const isoUtc = (column) => `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
 
@@ -597,6 +598,38 @@ function compareCandidates(a, b) {
   return a.symbol.localeCompare(b.symbol) || a.strategy_id - b.strategy_id;
 }
 
+// "day" is the current America/New_York date, the same session clock every other rule in this
+// system uses. pnl_usd comes from the fills themselves; `trades` carries no side column, so the
+// sign is taken from strategies.params, exactly as positionTracker derives it. With no closed
+// trades the sums are 0 rather than NULL: zero realized P&L is a fact we know, and closed_n
+// carries the emptiness. shadow_trades is a separate table, so counterfactuals cannot reach here.
+const SUMMARY_DAY_SQL = `
+  WITH closed_today AS (
+    SELECT t.qty, t.entry_price, t.exit_price, t.pnl_pct,
+           COALESCE(st.params->>'side', 'long') AS side
+    FROM trades t
+    JOIN strategies st ON st.id = t.strategy_id
+    WHERE t.status = 'closed'
+      AND t.exit_ts IS NOT NULL
+      AND (t.exit_ts AT TIME ZONE 'America/New_York')::date
+          = (now() AT TIME ZONE 'America/New_York')::date
+  )
+  SELECT count(*)::int AS closed_n,
+         COALESCE(sum(pnl_pct), 0)::float8 AS pnl_pct,
+         COALESCE(sum(qty * CASE WHEN side = 'short'
+                                 THEN entry_price - exit_price
+                                 ELSE exit_price - entry_price END), 0)::float8 AS pnl_usd,
+         (SELECT count(*) FROM trades WHERE status = 'open')::int AS open_n
+  FROM closed_today
+`;
+
+const SUMMARY_SIGNALS_SQL = `
+  SELECT ${isoUtc('ts')} AS ts, symbol, direction, reasoning
+  FROM signals
+  ORDER BY ts DESC, id DESC
+  LIMIT $1::int
+`;
+
 const route = (handler) => (req, res, next) => handler(req, res).catch(next);
 
 export const dashboardRoutes = express.Router();
@@ -806,5 +839,17 @@ dashboardRoutes.get(
   route(async (req, res) => {
     const [totals, curve] = await Promise.all([pool.query(PNL_TOTALS_SQL), pool.query(PNL_CURVE_SQL)]);
     res.json({ totals: totals.rows[0], equity_curve: curve.rows });
+  })
+);
+
+dashboardRoutes.get(
+  '/summary',
+  route(async (req, res) => {
+    const [day, signals] = await Promise.all([
+      pool.query(SUMMARY_DAY_SQL),
+      pool.query(SUMMARY_SIGNALS_SQL, [SUMMARY_SIGNAL_LIMIT]),
+    ]);
+    const { open_n: openN, ...dayTotals } = day.rows[0];
+    res.json({ day: dayTotals, open_n: openN, signals: signals.rows });
   })
 );

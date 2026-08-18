@@ -100,5 +100,7 @@ export async function tickerMetaRefresh() {
     daysToCovers,
     ts,
   ]);
-  console.log(`[tickerMetaRefresh] refreshed ${updated.rowCount} of ${symbols.length} tickers`);
+  const summary = `refreshed ${updated.rowCount} of ${symbols.length} tickers`;
+  console.log(`[tickerMetaRefresh] ${summary}`);
+  return summary;
 }

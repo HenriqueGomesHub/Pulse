@@ -3,6 +3,7 @@ import cron from 'node-cron';
 import { MAX_ACTIVE_STRATEGIES, MIN_ACTIVE_STRATEGIES, PORT, WATCHLIST, WIKI_ARTICLES } from './config.js';
 import { pool } from './db/pool.js';
 import { dashboardRoutes } from './routes/dashboard.js';
+import { heartbeat, warnMissingHubKey } from './services/hub.js';
 import { primaryMentionSource } from './services/mentionSource.js';
 import { apewisdomIngest } from './workers/apewisdomIngest.js';
 import { evolution } from './workers/evolution.js';
@@ -118,7 +119,28 @@ async function runPipeline(forceMarket) {
   await strategyRunner();
   await positionTracker();
   await shadowTracker();
-  console.log(`[pipeline] tick finished in ${Date.now() - startedAt}ms`);
+  const summary = `tick finished in ${Date.now() - startedAt}ms, primary mention source ${source}`;
+  console.log(`[pipeline] ${summary}`);
+  return summary;
+}
+
+// Heartbeats fire only from the cron paths, never from the CLI entry points. A manual `npm run
+// tick` reporting as the scheduled agent would tell Hub the schedule is healthy when it is not —
+// the same class of lie as the stale-writer episode. Reporting can only ever log, so a Hub
+// outage cannot fail a run.
+function scheduled(name, staleAfterMinutes, run) {
+  return async () => {
+    let status = 'running';
+    let summary;
+    try {
+      summary = await run();
+    } catch (error) {
+      status = 'error';
+      summary = error.message;
+      console.error(`[${name}] run failed`, error);
+    }
+    await heartbeat({ name, status, summary, staleAfterMinutes });
+  };
 }
 
 // An explicit null in WIKI_ARTICLES is a decision and warns nothing; an absent key is an
@@ -163,49 +185,30 @@ if (process.argv[2] === 'tick') {
   app.get('/health', (req, res) => res.json({ ok: true }));
   app.use('/api', dashboardRoutes);
 
-  cron.schedule(
-    '*/5 * * * *',
-    () => {
-      runPipeline(false).catch((err) => console.error('[pipeline] tick failed', err));
-    },
-    { timezone: 'America/New_York' }
-  );
+  cron.schedule('*/5 * * * *', scheduled('pipeline', 15, () => runPipeline(false)), {
+    timezone: 'America/New_York',
+  });
 
-  cron.schedule(
-    '0 6 * * *',
-    () => {
-      tickerMetaRefresh().catch((err) => console.error('[tickerMetaRefresh] run failed', err));
-    },
-    { timezone: 'America/New_York' }
-  );
+  cron.schedule('0 6 * * *', scheduled('ticker-meta', 1560, tickerMetaRefresh), {
+    timezone: 'America/New_York',
+  });
 
-  cron.schedule(
-    '0 * * * *',
-    () => {
-      statsRollup().catch((err) => console.error('[statsRollup] run failed', err));
-    },
-    { timezone: 'America/New_York' }
-  );
+  cron.schedule('0 * * * *', scheduled('stats-rollup', 90, statsRollup), {
+    timezone: 'America/New_York',
+  });
 
   // 09:00 ET is 13:00 UTC — comfortably past the measured finalization lag for the previous UTC
   // day, and before the open, so the day's wiki feature is fixed for the whole session.
-  cron.schedule(
-    '0 9 * * *',
-    () => {
-      wikiIngest().catch((err) => console.error('[wikiIngest] run failed', err));
-    },
-    { timezone: 'America/New_York' }
-  );
+  cron.schedule('0 9 * * *', scheduled('wiki-ingest', 1560, wikiIngest), {
+    timezone: 'America/New_York',
+  });
 
-  cron.schedule(
-    '0 3 * * 0',
-    () => {
-      evolution().catch((err) => console.error('[evolution] run failed', err));
-    },
-    { timezone: 'America/New_York' }
-  );
+  cron.schedule('0 3 * * 0', scheduled('evolution', 10260, evolution), {
+    timezone: 'America/New_York',
+  });
 
   warnUnmappedWikiArticles();
+  warnMissingHubKey();
   await warnInactiveSeeds();
 
   app.listen(PORT, () =>

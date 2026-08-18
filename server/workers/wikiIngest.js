@@ -114,7 +114,7 @@ export async function wikiIngest() {
     }
   }
 
-  console.log(
-    `[wikiIngest] ${mapped.length} mapped tickers of ${WATCHLIST.length}, ${inserted} daily rows upserted over a ${WINDOW_DAYS}-day window, ${skipped} skipped`
-  );
+  const summary = `${mapped.length} mapped tickers of ${WATCHLIST.length}, ${inserted} daily rows upserted over a ${WINDOW_DAYS}-day window, ${skipped} skipped`;
+  console.log(`[wikiIngest] ${summary}`);
+  return summary;
 }

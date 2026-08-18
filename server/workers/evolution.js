@@ -670,7 +670,7 @@ export async function evolution() {
     );
   }
 
-  console.log(
-    `[evolution] cycle complete: ${replacement === null ? 'nothing retired' : `swapped ${worst.name} → ${replacement.name}`}, ${created.length} candidates recorded, ${promoted} promoted, ${activeCount} active strategies`
-  );
+  const summary = `cycle complete: ${replacement === null ? 'nothing retired' : `swapped ${worst.name} → ${replacement.name}`}, ${created.length} candidates recorded, ${promoted} promoted, ${activeCount} active strategies`;
+  console.log(`[evolution] ${summary}`);
+  return summary;
 }
