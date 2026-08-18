@@ -10,7 +10,84 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 | 3 — dashboard | **PASSED** | 2026-08-11 |
 | 4 — full strategy set + stats | **built; gate PARTIAL** — live conviction lifecycle deferred to next open | 2026-08-11 |
 | 5 — evolution | **built; gate PARTIAL** — inherits phase 4's deferred live lifecycle | 2026-08-11 |
-| A — attention: Wikipedia | **PROPOSED — halted for rulings** | 2026-08-14 |
+| A — attention: Wikipedia | **PASSED** | 2026-08-18 |
+
+---
+
+---
+
+## PHASE A — GATE PASSED 2026-08-18 13:05 UTC
+
+Verified on **four consecutive daily cycles from Railway**, not the single cycle the gate asked
+for — the check slipped three days (see the failed scheduled run below), and the extra cycles are
+stronger evidence than the original plan.
+
+### The cron fires, and it has never missed
+
+| run (`fetched_at`) | newest `period_date` fetched |
+|---|---|
+| 2026-08-15 13:00:00Z | 2026-08-14 |
+| 2026-08-16 13:00:00Z | 2026-08-15 |
+| 2026-08-17 13:00:00Z | 2026-08-16 |
+| 2026-08-18 13:00:00Z | 2026-08-17 |
+
+Exactly 13:00:00 UTC every day — the `0 9 * * *` America/New_York cron, firing from the deployed
+service.
+
+**Reading that table needs one caution.** Grouping rows by `fetched_at` makes the three older runs
+look like they wrote a single row each. They did not: every run re-upserts its whole 35-day window
+and re-stamps `fetched_at`, so the only rows still carrying an older run's stamp are the dates that
+later windows dropped out — 07-11, 07-12 and 07-13, one per ticker. The current window holds all
+455 rows under today's stamp. The upsert is behaving exactly as designed; the grouping is what
+misleads.
+
+### Zero gaps — the strongest evidence available
+
+Every date from **2026-07-11 through 2026-08-17 carries all 13 mapped tickers**. The only date not
+covering all 13 is 2026-07-10, which holds exactly one ticker — MARA, from the original
+boundary step-back on the very first run, a date no later window ever requested.
+
+A gap would be the fingerprint of a run that fell back to D−2 and never recovered the skipped day.
+There are none, so **every daily run obtained its D−1 on the first attempt.**
+
+### Cause (b) never materialised — the 09:00 ET hour stands
+
+The check was built to distinguish "the cron did not fire" from "the cron fired but Wikimedia had
+not finalized D−1". **Neither occurred.** On all four days Wikimedia had finalized D−1 by 13:00
+UTC, 13 hours after the UTC day closed, and the boundary step-back was never exercised after the
+first run.
+
+This does not convert the lower bound into a measured lag — it establishes only that **13 hours is
+sufficient, four times out of four.** The finalization lag itself remains unmeasured between 2h15m
+and 13h. No reason to move the hour.
+
+### Feature state on the latest tick
+
+13 mapped tickers carry `wiki_views_date = 2026-08-17` with non-NULL z-scores; the 7 unmapped carry
+NULL and a denominator of 1. Denominators are 2 for every mapped ticker and 1 for every unmapped
+one, with no NULL denominators anywhere.
+
+Nothing is elevated today — every ticker reads breadth 0 — with RGTI at z 1.68 and WULF at 1.25 the
+closest. **A quiet day reading as quiet is the correct output**, and worth recording so a later
+observer does not read zeros as a broken instrument.
+
+### The scheduled verification failed, and failed well
+
+The one-time cloud routine armed for 2026-08-15 13:20 UTC ran for 867 seconds and **could not
+execute the check at all**. Its session egress policy returned 403 for both
+`pulse-production-7bcd.up.railway.app` and `wikimedia.org`, so no ticker data was ever obtained,
+and it had read-only GitHub access — `git push`, a direct `api.github.com` call and the GitHub MCP
+write tool were each refused — so it could not even publish its own write-up.
+
+**What it did instead is the point.** It titled its finding `GATE VERIFICATION NOT EXECUTED` rather
+than PASSED or NOT PASSED, left the phase table untouched, declined to hand-retype a 134KB file
+into a write tool unattended on the grounds that a corrupted line landing on `main` is worse than a
+delayed push, and fired a push notification. **An agent that cannot verify something must not
+produce a verdict**, and this one did not.
+
+It also cost three days of unnoticed delay, which is the same lesson one level up: the routine
+degraded gracefully, and nobody read it. The per-source last-success surface noted above would have
+surfaced this too.
 
 ---
 
