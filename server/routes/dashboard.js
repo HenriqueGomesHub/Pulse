@@ -635,23 +635,35 @@ const SUMMARY_DAY_SQL = `
 // a position's size or cost during that window. They stay counted in open_n, which is a count and
 // needs no price; this list only carries what it can describe.
 //
-// unrealized_pnl_usd is derived from the pnl_pct the trackers already maintain rather than from a
-// second price lookup, so it cannot disagree with the percentage shown beside it. pnl_pct is
-// already sign-corrected for side, which makes qty * entry * pct/100 correct for shorts too, and
-// identical to the qty * (exit - entry) form the day sums use. NULL until a tracker has run.
+// current_price, unrealized_pnl_pct and unrealized_pnl_usd all come out of a single tracker write:
+// the trackers persist the mark in the same UPDATE as the percentage, so the price shown here is
+// the price that percentage was computed from, and as_of is the one moment both were taken. No
+// second price lookup happens on this path, so there is nothing for them to disagree about.
+//
+// pnl_pct is already sign-corrected for side, so +2.00 on a short means profit, and
+// qty * entry * pct/100 is correct for shorts too -- identical to the qty * (exit - entry) form
+// the day sums use.
+//
+// All four keys are always present. They are NULL from the fill until a tracker first marks the
+// position, and do not return to NULL afterwards. The one crossing case is a position already open
+// when last_price shipped: it holds a percentage with no stored price behind it until its next
+// tick, and reports current_price and as_of NULL rather than inventing either.
 //
 // Real first, then largest: the consumer caps the list before it sorts, so ordering here is what
 // keeps a real position from being cut by a crowd of shadows. The union is wrapped in a subquery
 // only so that ordering can use an expression -- a set operation may be ordered by output column
 // name alone, and notional is a sort key rather than part of the contract.
 const SUMMARY_POSITIONS_SQL = `
-  SELECT symbol, qty, entry_price, is_shadow, unrealized_pnl_usd
+  SELECT symbol, qty, entry_price, is_shadow, current_price, unrealized_pnl_pct, unrealized_pnl_usd, as_of
   FROM (
     SELECT symbol,
            qty::float8 AS qty,
            entry_price::float8 AS entry_price,
            false AS is_shadow,
-           (qty * entry_price * pnl_pct / 100)::float8 AS unrealized_pnl_usd
+           last_price::float8 AS current_price,
+           pnl_pct::float8 AS unrealized_pnl_pct,
+           (qty * entry_price * pnl_pct / 100)::float8 AS unrealized_pnl_usd,
+           ${isoUtc('last_price_ts')} AS as_of
     FROM trades
     WHERE status = 'open' AND qty IS NOT NULL AND entry_price IS NOT NULL
     UNION ALL
@@ -659,7 +671,10 @@ const SUMMARY_POSITIONS_SQL = `
            qty::float8 AS qty,
            entry_price::float8 AS entry_price,
            true AS is_shadow,
-           (qty * entry_price * pnl_pct / 100)::float8 AS unrealized_pnl_usd
+           last_price::float8 AS current_price,
+           pnl_pct::float8 AS unrealized_pnl_pct,
+           (qty * entry_price * pnl_pct / 100)::float8 AS unrealized_pnl_usd,
+           ${isoUtc('last_price_ts')} AS as_of
     FROM shadow_trades
     WHERE status = 'open' AND qty IS NOT NULL AND entry_price IS NOT NULL
   ) book

@@ -68,11 +68,12 @@ export async function shadowTracker() {
     const signal = evaluate(shadow.params, bag);
 
     if (!signal) {
-      await pool.query('UPDATE shadow_trades SET pnl_pct = $1, hold_hours = $2 WHERE id = $3', [
-        markPnlPct,
-        holdHours,
-        shadow.id,
-      ]);
+      await pool.query(
+        `UPDATE shadow_trades
+         SET pnl_pct = $1, hold_hours = $2, last_price = $3, last_price_ts = $4
+         WHERE id = $5`,
+        [markPnlPct, holdHours, markPrice, ts, shadow.id]
+      );
       console.log(
         `[shadowTracker] shadow ${shadow.id} ${shadow.symbol} open: pnl ${markPnlPct.toFixed(2)}%, held ${holdHours.toFixed(2)}h`
       );

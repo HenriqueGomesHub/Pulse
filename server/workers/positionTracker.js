@@ -237,8 +237,11 @@ export async function positionTracker() {
       const signal = evaluate(trade.params, bag);
 
       await pool.query(
-        'UPDATE trades SET pnl_pct = $1, trade_max_adverse_pct = $2, peak_price = $3, hold_hours = $4 WHERE id = $5',
-        [pnlPct, maxAdversePct, excursion.peak, holdHours, trade.id]
+        `UPDATE trades
+         SET pnl_pct = $1, trade_max_adverse_pct = $2, peak_price = $3, hold_hours = $4,
+             last_price = $5, last_price_ts = $6
+         WHERE id = $7`,
+        [pnlPct, maxAdversePct, excursion.peak, holdHours, currentPrice, ts, trade.id]
       );
 
       if (!signal) {
