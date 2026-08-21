@@ -602,7 +602,9 @@ function compareCandidates(a, b) {
 // system uses. pnl_usd comes from the fills themselves; `trades` carries no side column, so the
 // sign is taken from strategies.params, exactly as positionTracker derives it. With no closed
 // trades the sums are 0 rather than NULL: zero realized P&L is a fact we know, and closed_n
-// carries the emptiness. shadow_trades is a separate table, so counterfactuals cannot reach here.
+// carries the emptiness. shadow_trades is a separate table, so counterfactuals cannot reach the
+// sums: the shadow count below is a count of the counterfactual book and nothing else, and open_n
+// keeps its meaning of real open trades only.
 const SUMMARY_DAY_SQL = `
   WITH closed_today AS (
     SELECT t.qty, t.entry_price, t.exit_price, t.pnl_pct,
@@ -619,8 +621,49 @@ const SUMMARY_DAY_SQL = `
          COALESCE(sum(qty * CASE WHEN side = 'short'
                                  THEN entry_price - exit_price
                                  ELSE exit_price - entry_price END), 0)::float8 AS pnl_usd,
-         (SELECT count(*) FROM trades WHERE status = 'open')::int AS open_n
+         (SELECT count(*) FROM trades WHERE status = 'open')::int AS open_n,
+         (SELECT count(*) FROM shadow_trades WHERE status = 'open')::int AS shadow_n
   FROM closed_today
+`;
+
+// The open book, real and counterfactual in one list, told apart by is_shadow. The flag is a
+// literal boolean per branch rather than anything derived: the consumer treats "not explicitly
+// false" as simulated, so a real position depends on this column actually saying false.
+//
+// Rows missing qty or entry_price are left out. A real entry sits with both NULL for the minutes
+// between the order going to Alpaca and the fill coming back, and there is no honest way to state
+// a position's size or cost during that window. They stay counted in open_n, which is a count and
+// needs no price; this list only carries what it can describe.
+//
+// unrealized_pnl_usd is derived from the pnl_pct the trackers already maintain rather than from a
+// second price lookup, so it cannot disagree with the percentage shown beside it. pnl_pct is
+// already sign-corrected for side, which makes qty * entry * pct/100 correct for shorts too, and
+// identical to the qty * (exit - entry) form the day sums use. NULL until a tracker has run.
+//
+// Real first, then largest: the consumer caps the list before it sorts, so ordering here is what
+// keeps a real position from being cut by a crowd of shadows. The union is wrapped in a subquery
+// only so that ordering can use an expression -- a set operation may be ordered by output column
+// name alone, and notional is a sort key rather than part of the contract.
+const SUMMARY_POSITIONS_SQL = `
+  SELECT symbol, qty, entry_price, is_shadow, unrealized_pnl_usd
+  FROM (
+    SELECT symbol,
+           qty::float8 AS qty,
+           entry_price::float8 AS entry_price,
+           false AS is_shadow,
+           (qty * entry_price * pnl_pct / 100)::float8 AS unrealized_pnl_usd
+    FROM trades
+    WHERE status = 'open' AND qty IS NOT NULL AND entry_price IS NOT NULL
+    UNION ALL
+    SELECT symbol,
+           qty::float8 AS qty,
+           entry_price::float8 AS entry_price,
+           true AS is_shadow,
+           (qty * entry_price * pnl_pct / 100)::float8 AS unrealized_pnl_usd
+    FROM shadow_trades
+    WHERE status = 'open' AND qty IS NOT NULL AND entry_price IS NOT NULL
+  ) book
+  ORDER BY is_shadow, abs(qty * entry_price) DESC, symbol
 `;
 
 const SUMMARY_SIGNALS_SQL = `
@@ -845,11 +888,18 @@ dashboardRoutes.get(
 dashboardRoutes.get(
   '/summary',
   route(async (req, res) => {
-    const [day, signals] = await Promise.all([
+    const [day, positions, signals] = await Promise.all([
       pool.query(SUMMARY_DAY_SQL),
+      pool.query(SUMMARY_POSITIONS_SQL),
       pool.query(SUMMARY_SIGNALS_SQL, [SUMMARY_SIGNAL_LIMIT]),
     ]);
-    const { open_n: openN, ...dayTotals } = day.rows[0];
-    res.json({ day: dayTotals, open_n: openN, signals: signals.rows });
+    const { open_n: openN, shadow_n: shadowN, ...dayTotals } = day.rows[0];
+    res.json({
+      day: dayTotals,
+      open_n: openN,
+      shadow_n: shadowN,
+      positions: positions.rows,
+      signals: signals.rows,
+    });
   })
 );
