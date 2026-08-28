@@ -931,12 +931,11 @@ dashboardRoutes.get(
    trades can be called noise by whoever reads it: `by_strategy.win_rate` sits beside the `closed`
    it was divided by, and every `strategy_deltas` row carries `n_this` and `n_last`.
 
-   A `reason` is only ever the rationale Pulse recorded at the moment it decided, read back
-   verbatim from `evolution_log.rationale`. Nothing here composes an explanation after the fact.
-   That is also why proposals rejected before they reached the database — the ones
-   `paramsFromProposal` throws out for an exit block that cannot close a loser — are absent rather
-   than summarised: their reason exists only in a console line, and a reason that was never
-   recorded is not one this endpoint may supply.
+   A `reason` is only ever what Pulse recorded at the moment it decided, read back verbatim:
+   `evolution_log.rationale` for a change the loop adopted, `evolution_rejections.reason` for a
+   proposal its validator threw out. Nothing here composes an explanation after the fact, so a
+   rejection from before migration 011 — when the reason reached a console line and nowhere else —
+   stays absent rather than being summarised from what is left.
 
    A subsystem with nothing to say reports `unavailable: true` instead of sending zeros, because a
    week with no trades and a Pulse with no trade log are indistinguishable once both read 0. */
@@ -1072,6 +1071,21 @@ const RECAP_EVOLUTION_SQL = `
   ORDER BY e.ts, e.id
 `;
 
+// The proposals the validator threw out before they could become strategies: a malformed side,
+// or an exit block that cannot close a loser. A sibling of evolution_log rather than a row in it,
+// so there is no strategy to join to and the name is the one the model gave the proposal.
+const RECAP_REJECTIONS_SQL = `
+  WITH ${RECAP_WINDOW_CTE}
+  SELECT ${isoUtc('r.ts')} AS at,
+         (r.ts AT TIME ZONE '${RECAP_TIMEZONE}')::date::text AS run_date,
+         r.candidate,
+         r.reason
+  FROM evolution_rejections r
+  CROSS JOIN win w
+  WHERE r.ts >= w.from_ts AND r.ts < w.to_ts
+  ORDER BY r.ts, r.id
+`;
+
 const RECAP_PROMOTED_SQL = `
   WITH ${RECAP_WINDOW_CTE}
   SELECT s.name AS strategy,
@@ -1133,17 +1147,21 @@ function calendarDate(value) {
 }
 
 /**
- * `runs` counts the days in the window on which the loop recorded a decision, not the days it woke
- * up. A cycle that retires nothing and promotes nothing writes no row anywhere and Pulse keeps no
- * record of having run, which is exactly why an empty window reports `unavailable` rather than
- * `runs: 0`: "the loop adopted nothing" and "the loop never ran" are the same silence in this
- * table, and a zero would quietly pick one of them.
+ * `runs` counts the days in the window on which the loop recorded something — a decision in
+ * evolution_log, or a refusal in evolution_rejections — not the days it woke up. A cycle that
+ * bails before it proposes anything, because too few strategies qualify to rank a worst against a
+ * best or because the model returned nothing usable, still writes no row anywhere and leaves no
+ * record of having run. That is why an empty window reports `unavailable` rather than `runs: 0`:
+ * "the loop found nothing to do" and "the loop never ran" are the same silence, and a zero would
+ * quietly pick one of them.
  */
-function recapEvolution(rows) {
-  if (rows.length === 0) return { unavailable: true };
+function recapEvolution(rows, rejections) {
+  if (rows.length === 0 && rejections.length === 0) return { unavailable: true };
 
   return {
-    runs: new Set(rows.map((row) => row.run_date)).size,
+    // A cycle that threw out every proposal it was given adopted nothing and so wrote nothing to
+    // evolution_log, but it did run, and the rejections are now the only record saying so.
+    runs: new Set([...rows, ...rejections].map((row) => row.run_date)).size,
     changes: rows
       .filter((row) => row.action !== 'mutate')
       .map((row) => ({
@@ -1157,9 +1175,17 @@ function recapEvolution(rows) {
         before: null,
         after: row.holdout_expectancy,
       })),
-    rejected: rows
-      .filter((row) => row.action === 'mutate' && !row.ever_promoted)
-      .map((row) => ({ candidate: row.strategy, reason: row.reason })),
+    // Two ways a proposal is refused, merged into the order they happened: thrown out by the
+    // validator before it could become a strategy, or recorded as a candidate the loop then never
+    // took up. `at` orders them and is then dropped — the contract carries the pair, not the time.
+    rejected: [
+      ...rejections.map((row) => ({ at: row.at, candidate: row.candidate, reason: row.reason })),
+      ...rows
+        .filter((row) => row.action === 'mutate' && !row.ever_promoted)
+        .map((row) => ({ at: row.at, candidate: row.strategy, reason: row.reason })),
+    ]
+      .sort((a, b) => a.at.localeCompare(b.at))
+      .map(({ at, ...rejection }) => rejection),
   };
 }
 
@@ -1216,11 +1242,12 @@ dashboardRoutes.get(
     }
 
     const bounds = [start, end];
-    const [trades, byStrategy, deltas, evolutionLog, promoted, open] = await Promise.all([
+    const [trades, byStrategy, deltas, evolutionLog, rejections, promoted, open] = await Promise.all([
       pool.query(RECAP_TRADES_SQL, bounds),
       pool.query(RECAP_BY_STRATEGY_SQL, bounds),
       pool.query(RECAP_DELTAS_SQL, bounds),
       pool.query(RECAP_EVOLUTION_SQL, bounds),
+      pool.query(RECAP_REJECTIONS_SQL, bounds),
       pool.query(RECAP_PROMOTED_SQL, bounds),
       pool.query(RECAP_OPEN_SQL),
     ]);
@@ -1243,7 +1270,7 @@ dashboardRoutes.get(
               worst: totals.closed > 1 ? totals.worst : null,
               by_strategy: byStrategy.rows,
             },
-      evolution: recapEvolution(evolutionLog.rows),
+      evolution: recapEvolution(evolutionLog.rows, rejections.rows),
       strategy_deltas: deltas.rows.flatMap(recapDeltas),
       watching: recapWatching(promoted.rows, open.rows),
     });

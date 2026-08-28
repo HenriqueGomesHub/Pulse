@@ -118,6 +118,24 @@ const PROMOTE_SQL = `
   RETURNING strategy_id::int AS strategy_id
 `;
 
+const REJECT_SQL = `
+  INSERT INTO evolution_rejections (ts, candidate, reason) VALUES (now(), $1, $2)
+`;
+
+// Recording a rejection must never be able to fail the cycle. The proposal is already
+// discarded and the console line already written by the time this runs, so a failed INSERT costs
+// a future recap one line and nothing else — the same rule the hub heartbeat follows, for the
+// same reason: a reporting write that can kill the run it reports on is worse than no report.
+async function recordRejection(proposal, reason) {
+  try {
+    await pool.query(REJECT_SQL, [typeof proposal?.name === 'string' ? proposal.name : null, reason]);
+  } catch (error) {
+    console.warn(
+      `[evolution] the rejection of ${JSON.stringify(proposal?.name)} could not be recorded, so it will be missing from the weekly recap: ${error.message}`
+    );
+  }
+}
+
 const CONDITION_SCHEMA = {
   type: 'object',
   properties: {
@@ -239,7 +257,7 @@ function assertExitClosesLosers(exit) {
   }
 }
 
-export function paramsFromProposal(proposal) {
+export function paramsFromProposal(proposal, onReject) {
   try {
     const params = {
       side: proposal.side,
@@ -255,6 +273,7 @@ export function paramsFromProposal(proposal) {
     return params;
   } catch (error) {
     console.warn(`[evolution] REJECTED proposal ${JSON.stringify(proposal?.name)}: ${error.message}`);
+    onReject?.(error.message);
     return null;
   }
 }
@@ -546,8 +565,14 @@ export async function evolution() {
   const created = [];
 
   for (const proposal of verdict.proposals) {
-    const params = paramsFromProposal(proposal);
-    if (params === null) continue;
+    let rejection = null;
+    const params = paramsFromProposal(proposal, (reason) => {
+      rejection = reason;
+    });
+    if (params === null) {
+      await recordRejection(proposal, rejection);
+      continue;
+    }
 
     const parent = byName.get(proposal.parent) ?? ranked[0];
     const result = replay(params, holdout);
