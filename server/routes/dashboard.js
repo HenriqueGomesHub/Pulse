@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import express from 'express';
 import { SHADOW_SLIPPAGE_PCT_PER_SIDE, WIKI_ARTICLES } from '../config.js';
 import { pool } from '../db/pool.js';
@@ -915,6 +916,336 @@ dashboardRoutes.get(
       shadow_n: shadowN,
       positions: positions.rows,
       signals: signals.rows,
+    });
+  })
+);
+
+/* ===================== The weekly recap =====================
+   GET /api/weekly-recap?start=YYYY-MM-DD&end=YYYY-MM-DD, both São Paulo calendar dates and both
+   inclusive, for hub's Friday review. Read-only in the strict sense: every statement below is a
+   SELECT, so nothing here can touch a strategy, a seed, a position or any trading decision.
+
+   Three obligations shape the payload rather than decorate it.
+
+   Every rate travels with the sample it was measured over, so a win rate that moved on four
+   trades can be called noise by whoever reads it: `by_strategy.win_rate` sits beside the `closed`
+   it was divided by, and every `strategy_deltas` row carries `n_this` and `n_last`.
+
+   A `reason` is only ever the rationale Pulse recorded at the moment it decided, read back
+   verbatim from `evolution_log.rationale`. Nothing here composes an explanation after the fact.
+   That is also why proposals rejected before they reached the database — the ones
+   `paramsFromProposal` throws out for an exit block that cannot close a loser — are absent rather
+   than summarised: their reason exists only in a console line, and a reason that was never
+   recorded is not one this endpoint may supply.
+
+   A subsystem with nothing to say reports `unavailable: true` instead of sending zeros, because a
+   week with no trades and a Pulse with no trade log are indistinguishable once both read 0. */
+
+const RECAP_TIMEZONE = 'America/Sao_Paulo';
+const RECAP_CURRENCY = 'USD';
+const RECAP_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+// $1 = start, $2 = end. Half-open once resolved to instants, so a trade that closed at 23:59 São
+// Paulo on the last day is inside the window and one that closed at 00:00 the next morning is not.
+const RECAP_WINDOW_CTE = `
+  win AS (
+    SELECT ($1::date)::timestamp AT TIME ZONE '${RECAP_TIMEZONE}' AS from_ts,
+           ($2::date + 1)::timestamp AT TIME ZONE '${RECAP_TIMEZONE}' AS to_ts
+  )
+`;
+
+// The same signed dollar figure /api/summary reports for a day, so a week can never disagree with
+// the days that make it up. Requires the `trades t` / `strategies st` aliases.
+const RECAP_PNL_USD = `
+  t.qty * CASE WHEN COALESCE(st.params->>'side', 'long') = 'short'
+               THEN t.entry_price - t.exit_price
+               ELSE t.exit_price - t.entry_price END
+`;
+
+// `log_rows` counts the whole trades table, not the window: it is the one thing that separates
+// "no trade closed this week", which is a measurement, from "this Pulse has no trade log", which
+// is the absence of one.
+const RECAP_TRADES_SQL = `
+  WITH ${RECAP_WINDOW_CTE},
+  closed AS (
+    SELECT t.symbol,
+           st.name AS strategy,
+           t.pnl_pct,
+           round(t.hold_hours, 1)::float8 AS held_hours,
+           (${RECAP_PNL_USD})::numeric AS pnl
+    FROM trades t
+    JOIN strategies st ON st.id = t.strategy_id
+    CROSS JOIN win w
+    WHERE t.status = 'closed'
+      AND t.exit_ts >= w.from_ts AND t.exit_ts < w.to_ts
+      AND t.pnl_pct IS NOT NULL
+  )
+  SELECT (SELECT count(*) FROM trades)::int AS log_rows,
+         count(*)::int AS closed,
+         (count(*) FILTER (WHERE pnl_pct > 0))::int AS winners,
+         (count(*) FILTER (WHERE pnl_pct <= 0))::int AS losers,
+         -- A week that closed nothing netted zero; a week whose trades carry no fill prices nets
+         -- an unknown. A bare COALESCE would report both as 0.
+         (CASE WHEN count(*) = 0 THEN 0 ELSE round(sum(pnl), 2) END)::float8 AS net,
+         (SELECT to_jsonb(x) FROM (
+            SELECT symbol, round(pnl, 2)::float8 AS pnl, strategy, held_hours
+            FROM closed WHERE pnl IS NOT NULL ORDER BY pnl DESC LIMIT 1) x) AS best,
+         (SELECT to_jsonb(x) FROM (
+            SELECT symbol, round(pnl, 2)::float8 AS pnl, strategy, held_hours
+            FROM closed WHERE pnl IS NOT NULL ORDER BY pnl ASC LIMIT 1) x) AS worst
+  FROM closed
+`;
+
+// `closed` is this row's win_rate denominator as well as its trade count, which is what keeps the
+// rate from ever being read without its sample size.
+const RECAP_BY_STRATEGY_SQL = `
+  WITH ${RECAP_WINDOW_CTE}
+  SELECT st.name AS strategy,
+         count(*)::int AS closed,
+         round(sum(${RECAP_PNL_USD}), 2)::float8 AS net,
+         round((count(*) FILTER (WHERE t.pnl_pct > 0))::numeric / count(*), 4)::float8 AS win_rate
+  FROM trades t
+  JOIN strategies st ON st.id = t.strategy_id
+  CROSS JOIN win w
+  WHERE t.status = 'closed'
+    AND t.exit_ts >= w.from_ts AND t.exit_ts < w.to_ts
+    AND t.pnl_pct IS NOT NULL
+  GROUP BY st.name
+  ORDER BY count(*) DESC, st.name
+`;
+
+// The comparison window is the equally long stretch immediately before this one, so a seven-day
+// recap compares against seven days and a window of any other length still compares like with
+// like. `prev.from_ts` runs up to exactly `win.from_ts`, which lets one range scan feed both
+// buckets and leaves `this_window` never ambiguous.
+const RECAP_DELTAS_SQL = `
+  WITH ${RECAP_WINDOW_CTE},
+  prev AS (
+    SELECT ($1::date - ($2::date - $1::date + 1))::timestamp AT TIME ZONE '${RECAP_TIMEZONE}'
+             AS from_ts
+  ),
+  scored AS (
+    SELECT st.name AS strategy,
+           (t.exit_ts >= w.from_ts) AS this_window,
+           t.pnl_pct
+    FROM trades t
+    JOIN strategies st ON st.id = t.strategy_id
+    CROSS JOIN win w
+    CROSS JOIN prev p
+    WHERE t.status = 'closed'
+      AND t.pnl_pct IS NOT NULL
+      AND t.exit_ts >= p.from_ts AND t.exit_ts < w.to_ts
+  )
+  SELECT strategy,
+         (count(*) FILTER (WHERE this_window))::int AS n_this,
+         (count(*) FILTER (WHERE NOT this_window))::int AS n_last,
+         round((count(*) FILTER (WHERE this_window AND pnl_pct > 0))::numeric
+               / NULLIF(count(*) FILTER (WHERE this_window), 0), 4)::float8 AS win_rate_this,
+         round((count(*) FILTER (WHERE NOT this_window AND pnl_pct > 0))::numeric
+               / NULLIF(count(*) FILTER (WHERE NOT this_window), 0), 4)::float8 AS win_rate_last,
+         round(avg(pnl_pct) FILTER (WHERE this_window), 4)::float8 AS expectancy_this,
+         round(avg(pnl_pct) FILTER (WHERE NOT this_window), 4)::float8 AS expectancy_last
+  FROM scored
+  GROUP BY strategy
+  ORDER BY count(*) FILTER (WHERE this_window) DESC, strategy
+`;
+
+// `ever_promoted` deliberately looks outside the window: a candidate the loop later took up was
+// not rejected, whenever that happened. `run_date` comes back as text so the distinct-day count is
+// a string comparison rather than a Date identity one.
+const RECAP_EVOLUTION_SQL = `
+  WITH ${RECAP_WINDOW_CTE}
+  SELECT ${isoUtc('e.ts')} AS at,
+         (e.ts AT TIME ZONE '${RECAP_TIMEZONE}')::date::text AS run_date,
+         e.action::text AS action,
+         s.name AS strategy,
+         e.rationale AS reason,
+         e.holdout_expectancy::float8 AS holdout_expectancy,
+         EXISTS (
+           SELECT 1 FROM evolution_log p
+           WHERE p.strategy_id = e.strategy_id AND p.action = 'promote'
+         ) AS ever_promoted
+  FROM evolution_log e
+  LEFT JOIN strategies s ON s.id = e.strategy_id
+  CROSS JOIN win w
+  WHERE e.ts >= w.from_ts AND e.ts < w.to_ts
+  ORDER BY e.ts, e.id
+`;
+
+const RECAP_PROMOTED_SQL = `
+  WITH ${RECAP_WINDOW_CTE}
+  SELECT s.name AS strategy,
+         (e.ts AT TIME ZONE '${RECAP_TIMEZONE}')::date::text AS on_date,
+         (SELECT count(*) FROM trades t
+          WHERE t.strategy_id = s.id AND t.status = 'closed' AND t.exit_ts > e.ts)::int
+           AS closed_since
+  FROM evolution_log e
+  JOIN strategies s ON s.id = e.strategy_id
+  CROSS JOIN win w
+  WHERE e.action = 'promote' AND e.ts >= w.from_ts AND e.ts < w.to_ts
+  ORDER BY e.ts
+`;
+
+// Open positions are read as of now rather than as of the window, because what carries into next
+// week is what is open when the report is written. The real book only: a shadow position is a
+// counterfactual and nobody has to watch it.
+const RECAP_OPEN_SQL = `
+  SELECT t.symbol,
+         st.name AS strategy,
+         (t.entry_ts AT TIME ZONE '${RECAP_TIMEZONE}')::date::text AS on_date,
+         round(t.hold_hours, 1)::float8 AS hold_hours,
+         round(t.pnl_pct, 2)::float8 AS pnl_pct
+  FROM trades t
+  JOIN strategies st ON st.id = t.strategy_id
+  WHERE t.status = 'open'
+  ORDER BY t.entry_ts
+`;
+
+const digest = (value) => createHash('sha256').update(value).digest();
+
+// The key convention belongs to the caller: hub holds the secret as PULSE_API_KEY and sends it as
+// X-Pulse-Key, and sends nothing at all until Pulse has a key to check it against. So an unset key
+// here leaves the route open and says so at boot, the same shape warnMissingHubKey takes in the
+// outbound direction — answering 401 while unconfigured would only break the one caller that is
+// waiting on this side to be configured first. Digesting both sides gives timingSafeEqual the
+// equal lengths it requires without leaking the real key's length.
+function pulseKeyAccepted(req) {
+  const expected = process.env.PULSE_API_KEY;
+  if (!expected) return true;
+  const supplied = req.get('X-Pulse-Key');
+  return typeof supplied === 'string' && timingSafeEqual(digest(supplied), digest(expected));
+}
+
+export function warnMissingPulseKey() {
+  if (!process.env.PULSE_API_KEY) {
+    console.warn(
+      '[pulse] PULSE_API_KEY is not set, so /api/weekly-recap answers anyone who asks; set the same secret here and in hub, which sends it as the X-Pulse-Key header'
+    );
+  }
+}
+
+// A date that survives the round trip is a date that exists: 2026-02-31 matches the pattern, and
+// Postgres would answer it with a 500 rather than the 400 it is.
+function calendarDate(value) {
+  if (typeof value !== 'string' || !RECAP_DATE_PATTERN.test(value)) return null;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value ? null : value;
+}
+
+/**
+ * `runs` counts the days in the window on which the loop recorded a decision, not the days it woke
+ * up. A cycle that retires nothing and promotes nothing writes no row anywhere and Pulse keeps no
+ * record of having run, which is exactly why an empty window reports `unavailable` rather than
+ * `runs: 0`: "the loop adopted nothing" and "the loop never ran" are the same silence in this
+ * table, and a zero would quietly pick one of them.
+ */
+function recapEvolution(rows) {
+  if (rows.length === 0) return { unavailable: true };
+
+  return {
+    runs: new Set(rows.map((row) => row.run_date)).size,
+    changes: rows
+      .filter((row) => row.action !== 'mutate')
+      .map((row) => ({
+        at: row.at,
+        strategy: row.strategy,
+        change: row.action === 'promote' ? 'promoted' : 'retired',
+        reason: row.reason,
+        // evolution_log stores the single expectancy the decision turned on, never a pair, so
+        // `before` stays null rather than becoming a number lifted from a neighbouring row.
+        metric: row.holdout_expectancy === null ? null : 'holdout_expectancy',
+        before: null,
+        after: row.holdout_expectancy,
+      })),
+    rejected: rows
+      .filter((row) => row.action === 'mutate' && !row.ever_promoted)
+      .map((row) => ({ candidate: row.strategy, reason: row.reason })),
+  };
+}
+
+// Two rows per strategy rather than one. Expectancy is what the loop optimises and win rate is
+// what it is explicitly told never to optimise, so a report carrying only the second would point
+// the review at the wrong number. Both carry the same pair of sample sizes.
+const recapDeltas = (row) =>
+  [
+    { metric: 'win_rate', this_week: row.win_rate_this, last_week: row.win_rate_last },
+    { metric: 'expectancy_pct', this_week: row.expectancy_this, last_week: row.expectancy_last },
+  ].map((delta) => ({ strategy: row.strategy, ...delta, n_this: row.n_this, n_last: row.n_last }));
+
+function recapWatching(promoted, open) {
+  return [
+    ...promoted.map((row) => ({
+      note: `${row.strategy} is newly active`,
+      why:
+        row.closed_since === 0
+          ? `promoted ${row.on_date} and no trade has closed under it since`
+          : `promoted ${row.on_date}, ${row.closed_since} trade${row.closed_since === 1 ? '' : 's'} closed under it since`,
+    })),
+    ...open.map((row) => ({
+      note: `${row.symbol} is still open on ${row.strategy}`,
+      why: [
+        `entered ${row.on_date}`,
+        row.hold_hours === null ? null : `held ${row.hold_hours}h`,
+        row.pnl_pct === null ? 'not marked yet' : `last marked ${row.pnl_pct}%`,
+      ]
+        .filter((part) => part !== null)
+        .join(', '),
+    })),
+  ];
+}
+
+dashboardRoutes.get(
+  '/weekly-recap',
+  route(async (req, res) => {
+    if (!pulseKeyAccepted(req)) {
+      res.status(401).json({ error: 'missing or wrong X-Pulse-Key' });
+      return;
+    }
+
+    const start = calendarDate(req.query.start);
+    const end = calendarDate(req.query.end);
+    if (start === null || end === null) {
+      res.status(400).json({
+        error: `start and end are required and must be real calendar dates as YYYY-MM-DD, read as ${RECAP_TIMEZONE} days and both inclusive`,
+      });
+      return;
+    }
+    if (end < start) {
+      res.status(400).json({ error: `end ${end} is before start ${start}` });
+      return;
+    }
+
+    const bounds = [start, end];
+    const [trades, byStrategy, deltas, evolutionLog, promoted, open] = await Promise.all([
+      pool.query(RECAP_TRADES_SQL, bounds),
+      pool.query(RECAP_BY_STRATEGY_SQL, bounds),
+      pool.query(RECAP_DELTAS_SQL, bounds),
+      pool.query(RECAP_EVOLUTION_SQL, bounds),
+      pool.query(RECAP_PROMOTED_SQL, bounds),
+      pool.query(RECAP_OPEN_SQL),
+    ]);
+
+    const totals = trades.rows[0];
+    res.json({
+      window: { start, end },
+      trades:
+        totals.log_rows === 0
+          ? { unavailable: true }
+          : {
+              closed: totals.closed,
+              winners: totals.winners,
+              losers: totals.losers,
+              net: totals.net,
+              currency: RECAP_CURRENCY,
+              best: totals.best,
+              // With one closed trade the best and the worst are the same trade. Reporting it
+              // twice would read as two findings, so the second slot stays empty.
+              worst: totals.closed > 1 ? totals.worst : null,
+              by_strategy: byStrategy.rows,
+            },
+      evolution: recapEvolution(evolutionLog.rows),
+      strategy_deltas: deltas.rows.flatMap(recapDeltas),
+      watching: recapWatching(promoted.rows, open.rows),
     });
   })
 );

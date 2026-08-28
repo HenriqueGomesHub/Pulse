@@ -2,7 +2,7 @@ import express from 'express';
 import cron from 'node-cron';
 import { MAX_ACTIVE_STRATEGIES, MIN_ACTIVE_STRATEGIES, PORT, WATCHLIST, WIKI_ARTICLES } from './config.js';
 import { pool } from './db/pool.js';
-import { dashboardRoutes } from './routes/dashboard.js';
+import { dashboardRoutes, warnMissingPulseKey } from './routes/dashboard.js';
 import { heartbeat, warnMissingHubKey } from './services/hub.js';
 import { primaryMentionSource } from './services/mentionSource.js';
 import { apewisdomIngest } from './workers/apewisdomIngest.js';
@@ -209,6 +209,7 @@ if (process.argv[2] === 'tick') {
 
   warnUnmappedWikiArticles();
   warnMissingHubKey();
+  warnMissingPulseKey();
   await warnInactiveSeeds();
 
   app.listen(PORT, () =>
