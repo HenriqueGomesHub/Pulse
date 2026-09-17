@@ -8,6 +8,7 @@ const FEATURES = new Set([
   'mentions_24h',
   'mention_growth_24h',
   'rel_volume_zscore',
+  'rel_volume_zscore_v2',
   'price_momentum',
   'price_momentum_1d',
   'price_momentum_2d',

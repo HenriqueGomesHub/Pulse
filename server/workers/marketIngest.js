@@ -36,6 +36,13 @@ export async function marketIngest() {
     const prevDay = dayBars[dayBars.length - 2];
     const prevTwoDay = dayBars[dayBars.length - 3];
 
+    // The last bar that has finished. bar.t is the bar's START, so a bar is complete once its
+    // start precedes the hour we are currently in. Picking it explicitly is what makes
+    // rel_volume_v2 independent of when in the hour this tick runs -- rel_volume reads whatever
+    // Alpaca serves, which is a bar still filling up from minute :15 onward.
+    const hourStart = Math.floor(ts.getTime() / HOUR_MS) * HOUR_MS;
+    const completed = hourBars.findLast((bar) => new Date(bar.t).getTime() < hourStart);
+
     const baseline = dayBars.slice(-31, -1);
     const avgHourlyVolume = baseline.length > 0
       ? baseline.reduce((sum, bar) => sum + bar.v, 0) / baseline.length / SESSION_HOURS
@@ -47,11 +54,12 @@ export async function marketIngest() {
       last.c,
       last.v,
       avgHourlyVolume ? last.v / avgHourlyVolume : null,
+      avgHourlyVolume && completed ? completed.v / avgHourlyVolume : null,
       pctChange(prevHour?.c, last.c),
       pctChange(prevDay?.c, lastDay?.c),
       pctChange(prevTwoDay?.c, lastDay?.c),
     ];
-    values.push(`($${params.length + 1}, $${params.length + 2}, $${params.length + 3}, $${params.length + 4}, $${params.length + 5}, $${params.length + 6}, $${params.length + 7}, $${params.length + 8})`);
+    values.push(`($${params.length + 1}, $${params.length + 2}, $${params.length + 3}, $${params.length + 4}, $${params.length + 5}, $${params.length + 6}, $${params.length + 7}, $${params.length + 8}, $${params.length + 9})`);
     params.push(...row);
   }
 
@@ -61,7 +69,7 @@ export async function marketIngest() {
   if (values.length === 0) return;
 
   await pool.query(
-    `INSERT INTO market_snapshots (symbol, ts, price, volume_1h, rel_volume, pct_change_1h, pct_change_1d, pct_change_2d)
+    `INSERT INTO market_snapshots (symbol, ts, price, volume_1h, rel_volume, rel_volume_v2, pct_change_1h, pct_change_1d, pct_change_2d)
      VALUES ${values.join(', ')}`,
     params
   );

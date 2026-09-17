@@ -94,7 +94,13 @@ export function seedsFor(primaryMentionSource) {
         side: 'long',
         entry: {
           all: [
-            { feature: 'rel_volume_zscore', op: 'gt', value: 2 },
+            // v2, not v1, since 2026-09-18. rel_volume_zscore was substantially a clock: its mean
+            // swung 1.19 across position-in-hour on evenly distributed ticks and 108 of this
+            // strategy's 115 entry signals landed in the two high buckets. Correcting a broken
+            // instrument is not a thesis change -- the thesis is still "unusual volume with
+            // momentum and no crowd" and every threshold is unchanged. v1 keeps its own meaning and
+            // its own column; nothing may gate on both.
+            { feature: 'rel_volume_zscore_v2', op: 'gt', value: 2 },
             { feature: 'price_momentum', op: 'gt', value: 1 },
             { feature: 'mention_zscore', op: 'lt', value: 1 },
           ],

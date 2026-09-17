@@ -16,6 +16,215 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 
 ---
 
+## THE CLOCK ARTEFACT — FIXED, GATED, SEED 3 SWITCHED — 2026-09-18
+
+`rel_volume_zscore` was substantially a clock. It is corrected by a new column, `rel_volume_zscore_v2`,
+recomputed across the whole tape, validated against a pre-registered gate, and seed 3's binding entry
+leg now reads it. **A second instrument with the same defect was found during the work and is NOT
+fixed — see the last section, which is why this only half-lifts the block on threshold work.**
+
+### 1. The correction, argued from the data
+
+The ruling expected pro-rating to win on responsiveness. **The data says otherwise, and the reason is
+not responsiveness.**
+
+`rel_volume = volume_1h / avgHourlyVolume`, where `volume_1h` comes from an hourly bar that is still
+accumulating. Alpaca serves the new bar from minute :15 — **4,120 of 4,126 observed resets land
+exactly there** — so a reading at :00–:10 is the previous *completed* bar and everything from :15
+onward is a bar filling up. On MARA, 2026-09-16, the same quantity ran:
+
+| minute | :00 | :05 | :10 | :15 | :25 | :40 | :55 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `rel_volume` | 0.635 | 0.635 | 0.635 | **0.210** | 0.320 | 0.473 | 0.669 |
+
+Four candidates were tested, each z-scored against its own trailing 30-day baseline, over 63,144
+stored observations:
+
+| candidate | mean-z spread (gate ≤ 0.15) | fire-rate ratio at z>2 |
+|---|---:|---:|
+| **v1** (current) | 1.010 | 26.0× |
+| **A** pro-rate, linear elapsed fraction | 0.166 FAIL | 2.30× |
+| **A′** pro-rate, empirical volume profile | 0.181 FAIL | — |
+| **D** hybrid: completed bar until :30, then pro-rate | 0.194 FAIL | 1.31× |
+| **B** completed bars only | **0.122 PASS** | **1.21×** |
+
+**Pro-rating fails, and it fails on variance rather than on bias.** It flattens the *mean* reasonably
+well, but dividing a quarter-hour of volume by 0.25 multiplies its noise as well as its signal — the
+early-hour estimate is intrinsically four times as variable. Since the z-baseline is pooled across
+all sampling positions, those noisier observations produce disproportionate tail events: **6.62%
+firing at :15–:25 against 2.88% at :45–:55.** For a threshold strategy the tail is the whole point,
+so a flat mean with a fat early tail is not a fix.
+
+The empirical profile was tested because pro-rating assumes linearity. It turns out volume accrues
+**very nearly linearly** — actual fraction runs only 0.6–2.7 pp above `m/60`, converging by :55 — so
+A′ buys nothing over A and is marginally worse.
+
+**Adopted: B, the last completed bar.** It cannot depend on sampling position because it never reads
+a bar that is still filling. Its cost is freshness — 15 to 115 minutes old, against v1's 0 to 60 —
+and **that cost is immaterial here**: seed 3's average hold is 95 hours. An hour of lag on a volume
+signal for a four-day position is nothing. At a scalping horizon this would be the wrong trade and
+the ruling's instinct would have been right.
+
+### 2. The seam
+
+`rel_volume` and `rel_volume_zscore` **keep their old meaning exactly** and are never recomputed. v2
+is a new column at both layers: `market_snapshots.rel_volume_v2` and `features.rel_volume_zscore_v2`.
+No strategy, replay or report may gate on both — the engine vocabulary carries them as separate
+features, so a params block naming one cannot silently read the other.
+
+### 3. Why the recomputation is honest, and how it differs from days_to_cover
+
+`avgHourlyVolume` was never stored, which at first looks fatal for a backfill. It is recoverable:
+`rel_volume = volume_1h / avgHourlyVolume` implies `avgHourlyVolume = volume_1h / rel_volume`. So
+
+```
+rel_volume_v2 = completed_bar_volume × rel_volume / volume_1h
+```
+
+is a **deterministic function of rows Pulse already wrote**, and the backfilled value is identical to
+what the forward path computes — not an approximation of it. That is the wiki precedent exactly: a
+backfilled observation is the same kind of thing as a live one, measured the same way.
+
+**`days_to_cover` is the contrasting case and the distinction is worth keeping.** It was NULL before
+FINRA data existed, and no arithmetic over stored rows can conjure a short-interest figure that was
+never observed. It therefore carries a genuine **time seam** that replay must respect. v2 carries
+none: it is defined uniformly over the entire tape, and arrives with a full baseline rather than a
+warmup gap.
+
+Backfill coverage: **63,048 of 63,144** `market_snapshots` rows (the 96 without are the first
+reading per symbol, before any completed bar existed).
+
+### 4. The validation gate — and a specification error in my own test
+
+Registered **before** measuring: mean-z spread across the four position-in-hour buckets **≤ 0.15**,
+against 1.19 today. Rationale: seed 3's leg is `z > 2`, so 0.15 shifts the effective threshold by
+≤ 7.5% where the artefact shifts it ≈ 60%.
+
+Run on the stored column over the entry window, v2 read **0.170 — a FAIL.** The diagnosis matters
+more than the number:
+
+| bucket | mean v1 | mean v2 |
+|---|---:|---:|
+| :00–:10 | +0.751 | +0.221 |
+| :15–:25 | −0.384 | +0.217 |
+| :30–:40 | +0.031 | +0.215 |
+| :45–:55 | +0.464 | **+0.051** |
+
+Buckets a, b and c sit **within 0.006 of each other**. The entire spread is bucket d. That is not a
+surviving clock effect — a clock effect appears across all four — it is **bucket composition**: the
+entry window runs 09:45–15:45, so the `:45–:55` bucket uniquely contains the 09:45 opening slot and
+uniquely lacks 15:45. At 09:45 the last completed bar is the 09:00 bar, which covers only the
+09:30–10:00 half of an RTH hour and is not comparable to a full one.
+
+**The test, not the threshold, was mis-specified**: a test meant to isolate position *within* an hour
+must hold the set of hours constant. On hours 10–14, where every bucket contains every hour:
+
+| bucket | mean v1 | mean v2 | fire v1 | fire v2 |
+|---|---:|---:|---:|---:|
+| :00–:10 | +0.819 | 0.277 | 13.39% | 4.70% |
+| :15–:25 | −0.371 | 0.271 | 0.25% | 4.66% |
+| :30–:40 | +0.029 | 0.270 | 1.94% | 4.57% |
+| :45–:55 | +0.419 | 0.268 | 5.99% | 4.55% |
+| **spread / ratio** | **1.190** | **0.009 PASS** | **53.6×** | **1.03×** |
+
+**Spread 0.009 against a 0.15 gate — a 132× reduction, passing by a factor of 17.** Fire-rate ratio
+1.03× against 53.6×.
+
+Two things are recorded rather than smoothed over. First, I registered the gate on a bucket set that
+could not answer the question it was registered to answer, and the corrected specification is a
+refinement of the *test* with the evidence for it stated (a/b/c within 0.006 on the unbalanced set
+too). Second, the opening-slot effect is **real, narrow and conservative**: at 09:45–09:55 v2 reads
+low because its completed bar is a half-length RTH hour, so it under-fires there. It is left in
+place, documented, rather than patched by blanking the first hour of the entry window.
+
+**Live-forward validation is still outstanding** — the gate requires both halves, and no live tick
+has yet written a v2 z-score. It is checked after this deploys.
+
+### 5. The minObs floors
+
+Measured observation rates per trailing window, per symbol:
+
+| baseline | window | current floor | measured rate | proposed floor |
+|---|---|---:|---:|---:|
+| `rel_volume_v2` | 30 days | — | 2,655 | **1,300** (≈15 days) |
+| `mention_zscore` | 7 days | 20 | 336 min / 784 avg | 160 |
+| `mentions_24h` | 24 hours | 12 | 47 min / 126 avg | 24 |
+| `wiki_views_zscore` | 30 days | 20 | 29 of 30 days | keep 20 |
+
+The principle is **half the nominal window**, because the old floor's failure was never sample size —
+20 observations are plenty to estimate a standard deviation — it was **temporal coverage**: 20
+observations describe one moment, not a month.
+
+**Only the v2 floor is implemented.** Raising the others is a seam and the rules forbid taking it
+quietly: checked against history, a floor of 160 would retroactively NULL 3,180 of 94,213
+trailing-7-day observations and 460 would fall below a 24-hour floor of 24 — all in the opening days
+of the tape, when the windows were genuinely still filling. Under the instrument-seam rules a
+corrected `mention_zscore` must be `mention_zscore_v2`, not a redefinition of `mention_zscore`.
+Since neither mention baseline is currently implicated in a broken instrument, **building v2 columns
+for them now would be speculative**, so the numbers are proposed and the implementation is held.
+`wiki_views_zscore` needs nothing: at 20 of 30 daily observations it already exceeds the principle,
+and raising it would add fragility for one missed day with no integrity gain.
+
+### 6. Seed 3 switched — and how differently it fires
+
+The gate passed, so seed 3's entry leg now reads `rel_volume_zscore_v2 > 2`. Thresholds are
+unchanged; the other two legs are untouched.
+
+**Why this is not a thesis change, recorded because the standing note could be read to forbid it.**
+The standing epistemic note governs *thesis kills* — do not retire a component because one regime
+failed to support it. This is a **measurement repair**: the thesis is still "unusual volume, with
+momentum, without a crowd", every threshold is identical, and what changed is that the instrument
+now measures volume rather than partly measuring the clock. Refusing to repair a broken instrument
+because the sample is small would be the note used exactly backwards — it protects components from
+being judged on thin evidence, not from being measured correctly.
+
+Entry-block fires from 2026-08-25 (when v2's baseline floor is first met) over the entry window,
+25,700 ticks:
+
+| | firing ticks | distinct symbols |
+|---|---:|---:|
+| v1 | 338 | 18 |
+| **v2** | **141** | **15** |
+| both agree | 88 | |
+
+**v2 fires 58% less often, and agrees with v1 on only 26% of v1's fires.** This is a large
+behavioural change and it should be: three quarters of what v1 called a signal was the clock.
+Expect materially fewer seed 3 entries, concentrated differently through the day.
+
+### 7. The finding this surfaced, NOT fixed: `price_momentum` has the same defect
+
+`price_momentum` is `pct_change_1h`, computed as `(last.c − prevHour.c) / prevHour.c` — and `last` is
+**the same accumulating bar**. At :00–:10 it measures a full hour-over-hour move; at :15 it measures
+a few minutes; it grows through the hour. Over hours 10–14 since 2026-08-25:
+
+| bucket | mean \|price_momentum\| | % over 1 (seed 3's threshold) |
+|---|---:|---:|
+| :00–:10 | 0.995 | **18.98%** |
+| :15–:25 | 0.529 | **6.52%** |
+| :30–:40 | 0.645 | 8.65% |
+| :45–:55 | 0.763 | 12.02% |
+
+A **2.9× spread** in fire rate from the clock alone. `mention_zscore` is clean by comparison —
+87.84 / 87.47 / 87.42 / 87.52 — as expected, since social data is on its own cadence.
+
+This is why seed 3's *full entry block* on v2 still tilts by position in hour (67 / 15 / 23 / 35
+across the buckets) even though `rel_volume_zscore_v2` alone is flat at 1.03×. **The residual is
+price_momentum.**
+
+**Not built, pending ruling**, because the ruling in hand is scoped to `rel_volume` — its remedies
+are volume-specific and it names seed 3's leg in the singular — and instrument changes are the
+owner's call. The proposed correction is the same shape and would reuse everything above:
+`price_momentum_v2 = (completed_bar.c − previous_completed_bar.c) / previous_completed_bar.c`, a new
+column, recomputed across history from stored closes, validated against the same balanced-bucket
+gate.
+
+**Consequence to be explicit about: the block on threshold work is only half-lifted.** Seed 3's entry
+block is no longer 53.6× clock-contaminated, but it is still 2.9× contaminated through
+`price_momentum`. Threshold work on `rel_volume_zscore_v2` is now interpretable; threshold work on
+the block as a whole is not, until `price_momentum_v2` exists.
+
+---
+
 ## UNIVERSE ROTATION — RULINGS 1–6, ticker_membership LANDED, MACHINERY HALTED — 2026-09-18
 
 Six rulings received. **`ticker_membership` is implemented and verified** (migration 018) as the

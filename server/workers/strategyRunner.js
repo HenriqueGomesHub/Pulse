@@ -122,6 +122,7 @@ function featureBag(row) {
     mentions_24h: row.mentions_24h === null ? null : Number(row.mentions_24h),
     mention_growth_24h: row.mention_growth_24h === null ? null : Number(row.mention_growth_24h),
     rel_volume_zscore: row.rel_volume_zscore === null ? null : Number(row.rel_volume_zscore),
+    rel_volume_zscore_v2: row.rel_volume_zscore_v2 === null ? null : Number(row.rel_volume_zscore_v2),
     price_momentum: row.price_momentum === null ? null : Number(row.price_momentum),
     price_momentum_1d: row.price_momentum_1d === null ? null : Number(row.price_momentum_1d),
     price_momentum_2d: row.price_momentum_2d === null ? null : Number(row.price_momentum_2d),

@@ -122,6 +122,7 @@ const OPEN_TRADES_SQL = `
            'mentions_1h', f.mentions_1h::float8,
            'unique_authors_1h', f.unique_authors_1h::float8,
            'rel_volume_zscore', f.rel_volume_zscore::float8,
+           'rel_volume_zscore_v2', f.rel_volume_zscore_v2::float8,
            'price_momentum', f.price_momentum::float8,
            'exhaustion_score', f.exhaustion_score::float8
          ) AS features
@@ -335,6 +336,7 @@ const SHADOW_OPEN_SQL = `
            'mentions_1h', f.mentions_1h::float8,
            'unique_authors_1h', f.unique_authors_1h::float8,
            'rel_volume_zscore', f.rel_volume_zscore::float8,
+           'rel_volume_zscore_v2', f.rel_volume_zscore_v2::float8,
            'price_momentum', f.price_momentum::float8,
            'exhaustion_score', f.exhaustion_score::float8
          ) AS features
@@ -448,6 +450,7 @@ const TICKER_META_SQL = `
          f.social_accel::float8 AS social_accel,
          f.exhaustion_score::float8 AS exhaustion_score,
          f.rel_volume_zscore::float8 AS rel_volume_zscore,
+         f.rel_volume_zscore_v2::float8 AS rel_volume_zscore_v2,
          f.price_momentum::float8 AS price_momentum,
          f.mentions_1h::float8 AS mentions_1h,
          f.unique_authors_1h::float8 AS unique_authors_1h,
@@ -546,6 +549,7 @@ const NEAR_SIGNAL_FEATURES_SQL = `
            'mentions_24h', f.mentions_24h::float8,
            'mention_growth_24h', f.mention_growth_24h::float8,
            'rel_volume_zscore', f.rel_volume_zscore::float8,
+           'rel_volume_zscore_v2', f.rel_volume_zscore_v2::float8,
            'price_momentum', f.price_momentum::float8,
            'price_momentum_1d', f.price_momentum_1d::float8,
            'price_momentum_2d', f.price_momentum_2d::float8,

@@ -7,6 +7,12 @@ import {
 } from '../services/mentionSource.js';
 
 const MIN_OBS_REL_VOLUME_30D = 20;
+// v2's floor is not v1's. v1 keeps its meaning exactly -- 20 observations, which can span as little
+// as 100 minutes -- because changing it would retroactively alter a column the replay tape depends
+// on. v2 is new, so it starts with the floor the evidence supports: 1,300 observations is half the
+// nominal 30-day window at the measured 88.5 rows/day. The old floor's failure was never sample
+// size, it was temporal coverage: 20 observations describe one moment, not a month.
+const MIN_OBS_REL_VOLUME_V2 = 1300;
 const MIN_OBS_MENTIONS_24H = 12;
 const MENTION_SD_FLOOR = 1;
 const HOUR_MS = 60 * 60 * 1000;
@@ -15,12 +21,12 @@ const WIKI_BASELINE_MIN_OBS = 20;
 
 const MARKET_SQL = `
   WITH recent AS (
-    SELECT symbol, ts, price, rel_volume, pct_change_1h, pct_change_1d, pct_change_2d
+    SELECT symbol, ts, price, rel_volume, rel_volume_v2, pct_change_1h, pct_change_1d, pct_change_2d
     FROM market_snapshots
     WHERE ts > now() - interval '30 days'
   ),
   ranked AS (
-    SELECT symbol, rel_volume, pct_change_1h, pct_change_1d, pct_change_2d,
+    SELECT symbol, rel_volume, rel_volume_v2, pct_change_1h, pct_change_1d, pct_change_2d,
            lag(rel_volume) OVER (PARTITION BY symbol ORDER BY ts) AS prev_rel_volume,
            row_number() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
     FROM recent
@@ -29,12 +35,16 @@ const MARKET_SQL = `
     SELECT symbol,
            count(rel_volume) AS n,
            avg(rel_volume) AS mean,
-           stddev_samp(rel_volume) AS sd
+           stddev_samp(rel_volume) AS sd,
+           count(rel_volume_v2) AS n_v2,
+           avg(rel_volume_v2) AS mean_v2,
+           stddev_samp(rel_volume_v2) AS sd_v2
     FROM recent
     GROUP BY symbol
   )
-  SELECT r.symbol, r.rel_volume, r.prev_rel_volume, r.pct_change_1h, r.pct_change_1d, r.pct_change_2d,
-         s.n, s.mean, s.sd
+  SELECT r.symbol, r.rel_volume, r.rel_volume_v2, r.prev_rel_volume,
+         r.pct_change_1h, r.pct_change_1d, r.pct_change_2d,
+         s.n, s.mean, s.sd, s.n_v2, s.mean_v2, s.sd_v2
   FROM ranked r
   JOIN stats s USING (symbol)
   WHERE r.rn = 1
@@ -168,6 +178,9 @@ export async function featureEngine() {
     const relVolumeZscore = m
       ? zscore(relVolume, num(m.mean), num(m.sd), num(m.n), MIN_OBS_REL_VOLUME_30D)
       : null;
+    const relVolumeZscoreV2 = m
+      ? zscore(num(m.rel_volume_v2), num(m.mean_v2), num(m.sd_v2), num(m.n_v2), MIN_OBS_REL_VOLUME_V2)
+      : null;
 
     const mentions = s ? num(s.mentions) : null;
     const authors = s ? num(s.unique_authors_1h) : null;
@@ -216,6 +229,7 @@ export async function featureEngine() {
       authorQuality,
       mentionZscore,
       relVolumeZscore,
+      relVolumeZscoreV2,
       priceMomentum,
       exhaustionScore({ socialAccel, priceMomentum, bullRatio, prevBullRatio, relVolume, prevRelVolume }),
       mentions1h,
@@ -242,7 +256,7 @@ export async function featureEngine() {
   }
 
   await pool.query(
-    `INSERT INTO features (symbol, ts, social_velocity, social_accel, author_quality, mention_zscore, rel_volume_zscore, price_momentum, exhaustion_score, mentions_1h, unique_authors_1h, days_to_cover, price_momentum_1d, price_momentum_2d, mentions_24h, upvotes_24h, mention_growth_24h, wiki_views, wiki_views_date, wiki_views_zscore, attention_breadth, attention_breadth_of)
+    `INSERT INTO features (symbol, ts, social_velocity, social_accel, author_quality, mention_zscore, rel_volume_zscore, rel_volume_zscore_v2, price_momentum, exhaustion_score, mentions_1h, unique_authors_1h, days_to_cover, price_momentum_1d, price_momentum_2d, mentions_24h, upvotes_24h, mention_growth_24h, wiki_views, wiki_views_date, wiki_views_zscore, attention_breadth, attention_breadth_of)
      VALUES ${values.join(', ')}`,
     params
   );
