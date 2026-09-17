@@ -16,6 +16,200 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 
 ---
 
+## UNIVERSE ROTATION — RULINGS 1–6, ticker_membership LANDED, MACHINERY HALTED — 2026-09-18
+
+Six rulings received. **`ticker_membership` is implemented and verified** (migration 018) as the
+strict precondition it was ruled to be. **The rotation machinery is NOT built**, and this entry says
+exactly why: one ruling from the proposal was not covered, two more are partly covered, and a
+finding surfaced during ruling 2's investigation that changes what the machinery would be built on
+top of.
+
+### ticker_membership — landed, and a no-op by design
+
+Half-open intervals `[from_ts, to_ts)`, `to_ts NULL` meaning current. Seeded with 20 rows: the 19
+founding members from the first feature row each one carries (earliest 2026-08-11 16:24 UTC, taken
+per symbol rather than from one hard-coded date, because the symbols began producing features at
+slightly different moments), and **BITF as the first closed interval**, ending 2026-09-17 22:05:00
+UTC — the instant the deploy carrying its removal ran its first tick, confirmed by the
+`system_warnings` row written at that same moment, not the moment the decision was made.
+
+`trade_excess` now resolves the basket through membership **as the universe stood at `entry_ts`**.
+That choice is deliberate: the benchmark answers *"instead of this trade, what could I have held
+across this window?"*, and the opportunity set is fixed at the moment of the decision. A name that
+leaves mid-trade stays in that trade's basket, because it was available when the trade was opened.
+
+**The rewire changed nothing, which is the point.** Every figure is identical before and after:
+
+| | expectancy | excess | basket members |
+|---|---:|---:|---:|
+| quiet-accumulation, n=22 | −3.0879% | −1.6948% | 19 on all 25 trades |
+| social-breakout, n=3 | −0.0678% | −0.0372% | 19 |
+
+A precondition that silently moved the numbers it protects would be worthless. BITF's exclusion was
+already handled by the 24-hour staleness bound, so the correct outcome was exactly zero change, and
+that is what was measured.
+
+Four guards tested against the live database and rolled back: a second open interval for a symbol is
+rejected by a partial unique index; an interval ending before it starts is rejected by a check
+constraint; a symbol absent from `tickers` is rejected by the foreign key; and **re-admitting a
+symbol whose previous interval is closed is accepted**, which the cooling-off rule needs to be able
+to express.
+
+### Ruling 2 — the backfill: SKIP, but the stated reasoning does not hold
+
+The ruling reasoned that market-feature baselines could be backfilled from Alpaca bars while mention
+baselines could not, and that since every seed has a mention leg, `tradable_from` is mention-bound at
+~30 days regardless — so the backfill would not shorten tradability.
+
+**The premise is wrong on the numbers, in a way that would have made the backfill look worthwhile.**
+`MENTION_BASELINE_INTERVAL` is **7 days**, not 30. The 30-day bound comes from
+`rel_volume_zscore`, which is a *market* feature and therefore exactly the kind the ruling suggests
+backfilling. So the honest reading is: **without backfill the bound is 30 days (rel_volume-bound);
+with a working backfill it would drop to 7 (mention-bound).** A 4× reduction, not zero.
+
+**The conclusion survives anyway, for a different and much harder reason: the backfill is not
+possible honestly.**
+
+`rel_volume` is `latest_hourly_bar.volume / (30-day mean daily volume / 6.5)`. The live path samples
+this every 5 minutes from a bar that is *still accumulating*. Measured on MARA, 2026-09-16:
+
+| minute in hour | :00 | :05 | :10 | :15 | :25 | :40 | :55 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `rel_volume` | 0.635 | 0.635 | 0.635 | **0.210** | 0.320 | 0.473 | 0.669 |
+
+A sawtooth. At :00–:10 the new hour's bar is not yet served, so the last *completed* bar is read; at
+:15 the new, nearly-empty bar appears; it then fills until :55.
+
+Historical bars are **complete**. A backfilled baseline would therefore contain only the peaks of
+that sawtooth, while the live observations compared against it are mostly mid-ramp. The baseline
+mean would be roughly double the live sampling mean and its standard deviation far smaller, so live
+observations would read as large negative z-scores and **`rel_volume_zscore > 2` — seed 3's binding
+entry leg — would essentially never fire for a backfilled ticker.** The backfill would not shorten
+warmup; it would replace a thin baseline with a wrong one.
+
+This is where the wiki precedent stops applying, and the distinction is worth keeping: `wikiIngest`
+backfills daily pageview counts that are **identical in kind** to what the live path records — one
+complete daily observation either way. A backfilled hourly bar is a *different kind of observation*
+than a 5-minute sample of an accumulating one. Real measured history is only safe as a baseline when
+it is measured the same way as the thing it will be compared against.
+
+**Recommendation: skip the backfill. Warmup stays 30 days.**
+
+### The finding that halts the machinery: `rel_volume_zscore` is substantially a clock
+
+Investigating the above surfaced something that is not about rotation at all.
+
+Since the live sampling is a sawtooth and the 30-day baseline averages over all 12 sampling positions
+in the hour, **the z-score partly measures where in the hour the tick fell.** Over 32,880 entry-window
+ticks in the last 31 days, with ticks distributed almost perfectly evenly across the four buckets
+(8,200 / 8,220 / 8,240 / 8,220):
+
+| position in hour | mean `rel_volume_zscore` |
+|---|---:|
+| :00–:10 (last completed bar) | **+0.821** |
+| :15–:25 (new bar, nearly empty) | **−0.373** |
+| :30–:40 | +0.058 |
+| :45–:55 (bar nearly full) | **+0.521** |
+
+A **1.19 z-score swing driven by the clock.** It is not the intraday volume curve: holding the hour
+fixed, the same ordering appears in every hour from 10:00 to 15:00 ET, with :15–:25 negative in all
+six.
+
+**Seed 3's entry signals follow it precisely.** Of 115 entry signals, **108 (94%) fall in the two
+high-z buckets** — 49 at :00–:10 and 59 at :45–:55 — against 7 in the two low buckets. Under a null
+of no clock effect, expectation is ~29 per bucket.
+
+So the binding entry leg of the strategy that produced the entire live book — the leg the month-one
+review identified as the constraint on everything — **fires 94% of the time as a function of what
+minute it is.**
+
+What this does and does not mean, held to the standing epistemic note:
+
+- It does **not** mean seed 3's −1.69% excess is explained. A clock-driven entry is not thereby a
+  bad entry; it is an entry selected on something nobody intended, and its measured excess remains
+  its measured excess.
+- It does mean the review's §5 reading of `rel_volume_zscore > 2` as "the binding leg is relative
+  volume" needs qualifying: it is binding, but it is not purely measuring relative volume.
+- It does mean **no threshold work on that leg is interpretable until this is settled**, which is
+  why the rotation machinery is halted rather than built on top of it. A rotated-in ticker would
+  inherit the same artefact, and a universe screen tuned against a clock signal would be tuned
+  against nothing.
+
+**No component is killed on this finding**, per the standing note. `rel_volume` is not removed, seed
+3 is not edited, and no threshold is touched. Candidate remedies for a future ruling, cheapest first:
+sample at a fixed position in the hour; compute `rel_volume` against elapsed-fraction-of-bar rather
+than the whole bar; or build the baseline per sampling position so like is compared with like.
+
+### Ruling 4 — the concrete numbers, as asked
+
+Proposed, given a 19-name universe and the measured trade rate of ~22 closed trades per month across
+19 names (≈1 per name per month):
+
+| | size | admitted by | removed by |
+|---|---:|---|---|
+| **core** | **14** | promotion from edge after 2 consecutive reviews as a member | hard failure only |
+| **edge** | **5** | screen rank, owner ruling at the monthly review | screen rank falling out of the top 40, or hard failure |
+
+- **Churn cap: 3 per cycle**, at the lower end of the ruled 3–4, because each entrant costs 30 days
+  of warmup and 4 simultaneous entrants would leave 21% of the universe untradable for a month.
+- **Hard failure, bypassing everything:** delisted; no `market_snapshots` row for 5 consecutive
+  trading days; `avg_volume_30d` below 500k for 10 consecutive sessions; price outside $1–$100 at
+  20 consecutive daily closes. Each raises a `system_warnings` row when it trips, so a BITF cannot
+  sit unnoticed for 37 days again.
+- **Entry criterion:** median ApeWisdom rank inside the top 150 over a trailing 14 days — presence,
+  not level, per ruling 1 — then ordered by `avg_volume_30d` and 30-day realised volatility, with
+  attention level playing no part in the ordering.
+- **Minimum tenure 90 days before a name is eligible to be rotated out** and **180-day cooling-off
+  before re-entry.** *These two were in the original proposal and were not ruled on; ruling 4's
+  "a name needs a reason to leave or enter — no churn for churn's sake" may be intended to replace
+  them with reason-based criteria alone. Flagged rather than assumed — see below.*
+
+### Rulings 1, 3, 5, 6 — recorded as ruled
+
+**1. Screen gates on data existence, not attention level.** Eligibility is presence in the ApeWisdom
+ranking at all; selection from that pool is liquidity, volatility and price band, with attention
+level playing no role. **This dissolves the circularity rather than bounding it**, and the resolution
+deserves recording next to the risk: the worry was that screening on attention would strip the
+cross-sectional variance seed 3's `mention_zscore < 1` leg needs, since a universe selected for
+elevated attention makes "quiet" structurally rare. Gating on *coverage* instead admits
+quiet-but-covered names freely, so the variance is preserved by construction rather than by
+calibration. The BITF case is what the coverage gate excludes: it carried
+`absent_from_ranking: true` in its stored payloads.
+
+**3.** `ticker_membership` first, before any name moves — done, above.
+
+**5.** A rotated-out ticker becomes non-enterable immediately; open positions, real and shadow, run
+their exits normally; **all** ingestion continues until its last position closes, then stops. The
+concrete consequence for implementation: ingest must iterate
+`WATCHLIST ∪ {symbols with an open real or shadow position}`, since all six workers currently
+iterate the constant directly and an exit leg gating on `mention_zscore > 3` cannot fire against a
+feed that stopped.
+
+**6.** Wiki mappings batch-curated, owner review before first fetch, explicit NULL allowed, and new
+names enter unmapped-until-reviewed rather than blocking on it — breadth denominators already report
+`attention_breadth_of` honestly, so an unmapped entrant reads as 1-of-1 rather than as a gap.
+
+### Not covered by the six rulings — surfaced, not inferred
+
+1. **The `minObs` floors.** The original proposal asked whether to raise them to match their nominal
+   windows, so a thin baseline yields NULL rather than a wrong number. It was not ruled on. It
+   matters more now than when it was asked: the clock finding above is a *second* way
+   `rel_volume_zscore` is untrustworthy, and both are baseline-construction problems. My
+   recommendation is unchanged — **yes, but as its own ruling, after the clock question is settled**,
+   so two changes to the same feature are never entangled in one debugging session.
+2. **Total universe size.** Ruling 4 asked for the core/edge split and I have proposed 14 + 5 = 19,
+   but **whether 19 is right at all was never ruled.** It is inherited from day one and has no
+   evidence under it. A larger universe would give the evolution loop more to choose from and more
+   trades per cycle; it also costs API budget and dilutes attention coverage. Proposing 19 is an
+   assumption I am flagging, not a finding.
+3. **Minimum tenure and cooling-off**, as noted in ruling 4 above — whether the reason-based
+   criteria replace them or sit alongside them.
+
+**The rotation machinery is halted on items 1–3 and on the clock finding.** `ticker_membership` is
+landed and safe to build on whenever those are settled.
+
+---
+
 ## UNIVERSE ROTATION — PROPOSAL, HALTED FOR RULINGS — 2026-09-18
 
 Greenlit as the next mini-phase on owner ruling, propose-first. **Nothing below is implemented.**
