@@ -1048,11 +1048,28 @@ Its first instruction is to prove it can read the database and, if it cannot, to
 cost three days because nobody read its refusal either. The routine's one rule is that the review
 changes nothing — the only write a run makes is committing its own artifact.
 
-**It will refuse on 2026-10-17 as configured.** The routine's environment carries no `DATABASE_URL`,
-so the run has nothing to read. This is stated here rather than solved here because putting a
-read-write production connection string into a scheduled-agent environment is the owner's call, and
-because the right credential is a **read-only Postgres role** — the review's own standard says
-read-only access is sufficient and preferred.
+**It will refuse on 2026-10-17 unless the credential is placed by hand.** The `pulse_readonly`
+role exists, has a password, and was verified end to end on 2026-09-18: it connects, reads
+`trades`, `trade_excess`, `ticker_membership` and the v2 feature column, and is refused on INSERT,
+UPDATE, DELETE, CREATE TABLE and `nextval` — every write path, at the database.
+
+**It cannot be attached to the routine through the API, and this is recorded so nobody burns another
+session rediscovering it.** Two placements were tried. `job_config.ccr.environment_variables`
+returned HTTP 200 and **silently dropped the field** — `session_request.environment_variables` stayed
+`{}`, which is the failure mode worth naming, because a 200 that changes nothing reads exactly like
+success. `job_config.ccr.session_context.environment_variables` returned a clear HTTP 400:
+
+> `job_config.ccr.session_context.environment_variables is not supported on triggers — trigger
+> configs are persisted and replayed on every fire`
+
+That is a deliberate platform refusal, not a bug: a trigger config is stored and replayed on every
+run, so a secret written into one would be persisted indefinitely. **The credential must be set on
+the environment (`env_01BTz5zsJ6g1LYDD2Yff4qT9`) or through the routine's page on claude.ai, by the
+owner.** No credential was persisted by either attempt.
+
+What did land: the routine's prompt now states that `DATABASE_URL` is the `pulse_readonly` role and
+that a permission-denied error on a write is the design working rather than a fault to diagnose —
+so a run that does get the credential will not thrash against its own read-only boundary.
 
 ### Corrections from the post-implementation audit
 
