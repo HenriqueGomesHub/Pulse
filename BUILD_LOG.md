@@ -16,6 +16,326 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 
 ---
 
+## UNIVERSE ROTATION — PROPOSAL, HALTED FOR RULINGS — 2026-09-18
+
+Greenlit as the next mini-phase on owner ruling, propose-first. **Nothing below is implemented.**
+Every number is measured; every open question is marked **RULING NEEDED** and nothing proceeds past
+them.
+
+The case, in one line: **19 static names falling together starved every conclusion this system has
+produced.** Item 7's §5 found that the entries do not distinguish between the names available to
+them. That is a statement about the names as much as about the entries, and it is untestable while
+the names never change.
+
+### What is already in hand
+
+**The candidate screen exists and is being thrown away every five minutes.** `apewisdomIngest`
+calls `fetchRanking()`, which pages through the entire ApeWisdom all-stocks ranking — **933 tickers
+across 10 pages** as of this write — builds `byTicker` from all of them, then iterates `WATCHLIST`
+and discards the other 914. Its own log line already reports the number it threw away. A rotation
+screen therefore costs **no new API, no new dependency, and no new failure mode**; it needs a table
+to write to and nothing else.
+
+The payload per ticker is `rank`, `ticker`, `name`, `mentions`, `upvotes`, `rank_24h_ago`,
+`mentions_24h_ago` — a level and a 24-hour momentum, for free. It also contains ETFs and index
+products (`SPY` at rank 1, `QQQ` at rank 3), so an instrument-type screen is mandatory, not optional.
+
+### The design risk that has to be named first
+
+**An attention-derived universe for an attention system is circular, and the circularity is not
+obviously survivable.** Every strategy in the book gates on `mention_zscore`, and `mention_zscore` is
+computed against a ticker's own trailing baseline. If the universe is selected for *being* in the
+ApeWisdom top N, the universe is pre-selected for elevated attention — and the cross-sectional
+variance the strategies need in order to discriminate is exactly what the screen removes.
+
+Seed 3 is the acute case: its binding entry leg is `mention_zscore < 1`, a filter for *quiet*. A
+universe screened on attention makes that leg harder to satisfy, in a way that has nothing to do
+with the market.
+
+This is not a reason to reject the ApeWisdom screen — it is the natural source and it is free. It is
+a reason to **measure the circularity before committing to it, and to build the alternative screen in
+the same breath.** See the ruling on screen basis below.
+
+### Constraint 1 — where candidates come from
+
+Proposed screen, in order, each stage reusing a definition that already exists rather than inventing
+a second one:
+
+1. **Instrument type.** Must resolve through Alpaca `getAsset` to a tradable US common stock.
+   `tickerMetaRefresh` already makes this call; ETFs, ADRs-with-no-borrow, and index products are
+   excluded here.
+2. **Eligibility.** The same filter `strategyRunner` already enforces: price $1–$100,
+   `avg_volume_30d > 500k`, exchange in NYSE / NASDAQ / AMEX. **A candidate that would fail the
+   runner's own filter must never enter the universe** — that conflict is exactly what made seed 1
+   decorative for a month.
+3. **Sustained attention, not a spike.** Median ApeWisdom rank inside the top N over a trailing
+   14 days, not a single-day rank. A name that appeared once is noise; the review's whole finding on
+   attention is that single events carry nothing.
+4. **Not already a member, and not rotated out inside the cooling-off period** (below).
+
+**RULING NEEDED — the screen basis.** Three options, and I do not think the first should be adopted
+alone:
+- **(a) ApeWisdom rank only.** Free, natural, and circular per the section above.
+- **(b) Liquidity and volatility only** — rank candidates on `avg_volume_30d` and realised
+  volatility, with attention used for nothing. Breaks the circularity completely; loses the thesis.
+- **(c) Recommended: (a) as the candidate pool, (b) as the ordering within it.** Attention decides
+  *who is eligible to be considered*; liquidity and volatility decide *who gets in*. The universe
+  stays attention-adjacent without being attention-ranked, and the circularity is bounded and
+  measurable.
+
+### Constraint 2 — the warmup problem is worse than "NULL until warm"
+
+This is the finding that most changes the design, and it inverts the stated concern.
+
+**A new ticker's features do not stay NULL. They go live early, against baselines too thin to mean
+anything.** `zscore()` returns NULL only while `n < minObs`, and the minimums are low:
+
+| feature | nominal baseline | `minObs` | time to go non-NULL |
+|---|---|---:|---|
+| `rel_volume_zscore` | 30 days | 20 | **≈100 minutes of market-hours ticks** |
+| `mentions_24h` z-score | 24 hours | 12 | ≈1 hour |
+| `mention_zscore` | 7 days | 20 | ≈2 hours (SD floored at 1) |
+| `wiki_views_zscore` | 30 days | 20 daily obs | **immediate** — `wikiIngest` backfills 35 days |
+| `days_to_cover` | n/a | n/a | next `tickerMetaRefresh` |
+
+A baseline built from 100 minutes has a small standard deviation, and a small denominator inflates
+every z-score computed against it. **`rel_volume_zscore > 2` is seed 3's binding entry leg.** A newly
+rotated-in ticker would therefore not sit inert — it would fire spuriously, on the strategy that
+carries the entire live book, within two hours of being added.
+
+**Proposal: `tickers.tradable_from TIMESTAMPTZ`, enforced in `ELIGIBLE_SQL`, not in strategy params.**
+A rotated-in ticker is ingested immediately — it must be, to build the baselines — and is invisible
+to `strategyRunner` until `now() >= tradable_from`. Enforcement belongs at the data layer for the
+same reason `shadow_trades` is a separate table: isolation must be structural, not dependent on
+every strategy's params staying right forever.
+
+**Proposed warmup: 30 days**, set by the longest nominal baseline any active strategy gates on
+(`rel_volume_zscore`). That is long. It is also the honest number, and it is the strongest argument
+in this document for a **small rotating edge rather than a redrawn list** — a 30-day warmup means a
+universe that turns over quickly is a universe permanently half-warm.
+
+**RULING NEEDED — raise the `minObs` floors to match the nominal windows?** Doing so would make
+every thin-baseline feature NULL rather than wrong, system-wide, which is self-protecting and would
+make `tradable_from` a belt-and-braces measure rather than the only guard. It also changes feature
+semantics for the 19 existing tickers and would retroactively alter what `mention_zscore` means in
+the replay tape. I recommend **yes, but as a separate ruling and after this mini-phase**, so the two
+changes are never entangled in one debugging session.
+
+### Constraint 3 — wiki mapping stays manual and owner-reviewed
+
+Per the redirect-trap precedent: `Marathon Digital Holdings` measures a redirect stub at 1.9
+views/day against `MARA Holdings` at 39.0, so a plausible-looking title silently returns a twentieth
+of the real signal. No automated title resolution.
+
+**Proposed flow.** Rotation-in is a two-step gate, and the 30-day warmup gives ample room for it:
+1. The screen proposes candidates and writes them to a table with their evidence. Nothing enters the
+   universe yet.
+2. The owner rules, and for each accepted candidate supplies a verified `WIKI_ARTICLES` title **or an
+   explicit `null`** — the existing convention, where null is a decision and absence is an oversight.
+3. Only then is the ticker admitted, with `tradable_from = now() + 30 days`.
+
+`warnUnmappedWikiArticles` currently warns only at boot and only to the console. **It is the third
+log-only warning, and the other two have already been moved** — it should write to
+`system_warnings` alongside them, so an unmapped rotated-in ticker is visible rather than printed.
+
+### Constraint 4 — a stable core and a rotating edge
+
+Grounded in the trade rate rather than in taste: the system produced **22 closed trades in a month
+across 19 names**, roughly one per name per month. The evolution loop will not rank a strategy below
+10 closed trades in 30 days. A universe member needs a comparable sample before anything can be said
+about it, and a name that rotates out after six weeks will never have one.
+
+Proposed:
+
+| | size | leaves when |
+|---|---:|---|
+| **core** | 15 | hard failure only — delisted, or eligibility permanently lost |
+| **edge** | 4–5 | ruled out at a monthly review, subject to the limits below |
+
+- **At most 2 changes per month**, ruled at the monthly review on the 17th so that rotation is a
+  decision made with the review's evidence in front of it, never an automatic process.
+- **Minimum tenure 90 days** before a name is eligible to be rotated out, so every member
+  accumulates roughly three months of trades before it can be judged.
+- **Cooling-off of 180 days** before a rotated-out name can return, so the list cannot oscillate.
+- **Hard failure bypasses all of the above.** BITF is the case: delisted in week one, zero
+  `market_snapshots` in 37 days, and nothing in the system noticed. A member producing no price data
+  for 5 consecutive trading days should raise a `system_warnings` row automatically, whatever its
+  tenure.
+
+### Constraint 5 — positions in a ticker that rotates out
+
+**Never force-close on rotation.** The review found max-hold expiries were dead capital rather than
+cut winners, and a forced exit destroys the exit-leg evidence that §3 of every review is built on. A
+rotation is a decision about future entries, not about open risk.
+
+Proposed: rotation-out clears `tradable_from`, which removes the ticker from `ELIGIBLE_SQL` so **no
+new entry can open**, while `positionTracker` continues to manage open positions to their natural
+exit on their own legs.
+
+This forces one concrete change that is easy to miss: **ingest must be driven by
+`WATCHLIST ∪ {symbols with an open position}`, not by `WATCHLIST` alone.** All six ingest workers
+currently iterate the constant directly. A rotated-out ticker holding an open position still needs
+market and social rows, because its exit legs gate on live features — `mention_zscore > 3` cannot
+fire against a feed that stopped. Without this the position would be held on stale features until its
+time bound expired, which is precisely the dead-capital outcome the exit autopsy already identified.
+
+### The dependency that makes this urgent rather than optional
+
+**`trade_excess` breaks the day the list changes, and it is now the primary metric.**
+
+It `CROSS JOIN`s `tickers`, so it benchmarks every historical trade against the watchlist **as it
+stands today**. Its own schema comment names this: *"the day a symbol is added or dropped, historical
+baskets become anachronistic and this needs a membership history rather than a CROSS JOIN."* That day
+is this mini-phase.
+
+BITF's removal did not trigger it — BITF never had a price, so it was already excluded by the
+24-hour staleness bound and every basket already read 19 members. **The next removal will not be so
+harmless.** A name with real price history that leaves the list would silently be removed from the
+basket of trades that closed while it was a member, changing the excess of trades already reported.
+
+**Proposed: a `ticker_membership(symbol, from_ts, to_ts)` table, written by the rotation path, with
+`trade_excess` joining on it** so each trade's basket is the universe as it stood during that trade's
+own window. This is not optional scope — it is the precondition for the primary metric surviving the
+first rotation, and it should land **before** the first name moves, not with it.
+
+### What this proposal does not include
+
+No automatic rotation. No change to any strategy's params. No change to feature semantics
+(`minObs` is a separate ruling). No change to the evolution loop, which continues to see whatever
+universe the runner exposes. No backfill of history for rotated-in names beyond what `wikiIngest`
+already does by design.
+
+### Rulings needed before any implementation
+
+1. **Screen basis** — (a) attention-ranked, (b) liquidity-ranked, or (c) attention pool ordered by
+   liquidity. Recommended: **(c)**.
+2. **Core and edge sizes**, and whether 19 is the right total at all — the proposal keeps it
+   unchanged, which is an assumption and not a finding.
+3. **Warmup of 30 days**, or shorter with the `minObs` change ruled in first.
+4. **Churn limits** — 2 per month, 90-day tenure, 180-day cooling-off.
+5. **Whether `ticker_membership` lands first as its own change**, which I recommend, or as part of
+   the rotation path.
+
+**Halted here for rulings.**
+
+---
+
+## ITEM 7 ACCEPTED — THREE CORRECTIONS FORCED, AND THE b2 CATCH — 2026-09-18
+
+Item 7 accepted in full on owner ruling. The report stands as written; what follows is what it
+forces to change *elsewhere*, because a result that only updates its own document has not been
+read.
+
+### THE b2 CATCH — what item 1 bought, one day after it was built
+
+**A strategy variant returned +1.37% expectancy with 14 wins in 23 trades, and it was worthless.**
+
+`b2` — short on `mention_zscore > 3`, 72-hour bound, +10%/−8% — is the best absolute expectancy any
+configuration of this system has ever produced, live or replayed. On any dashboard this system had
+before 2026-09-17 it reads as the first profitable strategy ever found, and the correct response
+would have looked like: promote it, build the borrow path, ship a short book.
+
+Over those same 23 windows the equal-weight watchlist basket fell **1.77%**. Shorting the whole
+watchlist, picking nothing, would have returned **+1.77%**. `b2` captured +1.37% of an available
++1.77% and **gave up 0.40 pp for the privilege of selecting**. Its excess is −0.40%. It is short
+beta wearing a signal's clothes, and the only thing that revealed it was the benchmark column built
+the previous day under ruling 1.
+
+Three things make this worth a permanent entry rather than a line in the item 7 report:
+
+1. **The false discovery was not marginal.** +1.37% with a 61% hit rate is not a borderline result
+   that careful reading would have caught. It is the most convincing number the project has
+   produced. Absolute expectancy would have endorsed it without hesitation.
+2. **The trap generalises to every falling-tape short and every rising-tape long.** Any strategy
+   whose net exposure matches the tape's direction will show absolute expectancy it did not earn.
+   Seed 3's −3.71% is the same error with the sign reversed — a long book punished for beta it
+   did not choose. **Absolute P&L flatters and punishes for the same reason, and the fix is the same
+   column.**
+3. **It paid for itself inside 24 hours.** Ruling 1 was argued as the thing that must be known before
+   anything else was worth doing. That argument is now evidenced rather than asserted.
+
+**The standard for every future sweep, from this entry forward.** Item 7 ran 28 comparisons: 15
+event-study cells and 13 replay variants. At α = 0.05, chance alone predicts ≈ 1.4 results at
+|t| > 1.96. It found exactly 2 (`a1` at −2.13, the 1–2 z-score band at 24 h at −1.97) — **what chance
+predicts, to the count.** Neither was reported as a finding.
+
+Every future sweep reports, in the same breath as its results: **the number of comparisons made, the
+number of significant results chance predicts at that count, and the number actually found.** A
+sweep that reports only its winners is not reporting a result, it is reporting a selection. Where a
+survivor matters, it also carries a split-half or an out-of-sample check before it is called
+anything but a lead.
+
+### Correction 1 — review §6's attention finding is amended
+
+**Was:** *"Elevated attention on this tape has been a bearish marker"*, from 1-of-2 breadth events
+returning −3.35% over five days against a −2.44% watchlist baseline.
+
+**Is:** those two numbers were averages over **different sets of days**. Measured against the basket
+over each event's own window, breadth ≥ 1 events return excess **−0.22% at 120 h, t = −0.39**
+(n = 33), and −0.32% / −0.75% at 24 h / 72 h, neither significant. **The breadth events were bad
+DAYS, not worse NAMES.** The −0.9 pp of apparent edge was almost entirely the window mismatch.
+
+The finding is retracted as stated. What survives is much weaker: attention events cluster on days
+the whole watchlist falls, which is a fact about when people talk, not a tradable property of what
+they talk about.
+
+**The error class, named so it is recognisable next time:** comparing a subset's average to a
+population average computed over different periods. It is the same mistake as reading seed 3's
+−3.71% as a strategy result. Both are fixed by the same discipline — **every comparison is against
+the benchmark over the identical window.**
+
+### Correction 2 — the attention-spike sell signal is downgraded from "real" to "unproven"
+
+Review §3 concluded of the `mention_zscore > 3` exit leg: *"Yes — this leg is real, and it is the
+only part of the system with evidence behind it."* That rested on 12 exits across both books, both
+positive, and price falling after.
+
+**It was measured unbenchmarked.** Every one of those exits happened on a tape where prices were
+falling generally, and none was compared to what the basket did over the same window. Item 7 tested
+the same signal directly: `mention_zscore > 3` events return excess **−0.44% / +0.42% / +0.89%** at
+24 / 72 / 120 hours — **sign changes twice, largest |t| = 0.55, n = 16–24.** The short variants built
+on it have negative excess at every geometry, and the long controls on the same entries sit at
+−0.18% and −0.03%, indistinguishable from the basket.
+
+**Both sides cannot be flat against their benchmarks if the spike carried direction.** The leg is
+therefore downgraded from **real** to **unproven**.
+
+Note precisely what is and is not being said. The exits themselves were not bad decisions — selling
+into a spike on a falling tape produced positive absolute outcomes, and would again. What is
+withdrawn is the claim that the spike *predicts* anything beyond what holding the basket would have
+told you. **The leg stays in seed 3 unchanged**: an exit that performs at benchmark is not a reason
+to remove it, and removing the system's only evidenced-looking component on a single month's
+unbenchmarked evidence would repeat the error in the other direction.
+
+### Correction 3 — the standing epistemic note
+
+**To be restated in every review and every experiment report until the sample changes.**
+
+The entire evidence base of this system is: **one month, one regime, 19 names, 22 closed trades.**
+The regime was falling — the equal-weight basket lost 5.12% over the tape and 15 of 19 names
+declined. Every |t| the project has produced is under 2.2. The system has **never seen an up-tape.**
+
+The attention thesis is therefore **UNSUPPORTED on this sample, not refuted.** The distinction is
+load-bearing, and there is a specific mechanism behind it: **attention-driven buying is historically
+a risk-on phenomenon.** A crowd arriving in a name during a decline and a crowd arriving during a
+rally are not the same event, and this system has only ever observed the first. A measurement that
+finds nothing in the only regime where the effect is least expected has not tested the hypothesis.
+
+Two rules follow, and they bind in both directions:
+
+- **No component is killed on this sample.** Not the attention legs, not the conviction call, not
+  seed 1, not seed 4, not the quiet leg — item 7's recommendation to drop it goes to the evolution
+  loop as a proposal, not to `seeds.js` as an edit.
+- **No component is trusted on this sample either.** Not the attention-spike exit, not `b2`, not the
+  1–2 z-score band, and not seed 2's 439 firing ticks, which are opportunity and not yet evidence.
+
+The asymmetry to hold onto: **a negative result on one regime is weak; a positive result on one
+regime is weaker.** Deleting things on this evidence destroys optionality that costs nothing to
+keep, while acting on things costs money. When the sample spans a second regime, both rules relax
+together and not before.
+
+---
+
 ## SECOND SET OF RULINGS — 2026-09-18
 
 Rulings on the implementation report of 2026-09-17. Four items: the read-only credential, item 7,

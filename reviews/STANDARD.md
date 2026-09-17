@@ -43,7 +43,10 @@ Keep these, in this order. A section with nothing to report says so and says why
    2026-09-17): a book that loses less than the tape it is drawn from has an edge and one that loses
    more does not. Shadow figures are reported both as priced and restated at the current slippage
    constant. Trades that are not strategy behaviour — smoke tests, wiring checks — are named as such
-   and excluded from the strategy read.
+   and excluded from the strategy read. **Every comparison is against the benchmark over the
+   identical window.** Comparing a subset's average to a population average computed over
+   different periods is the error that produced both corrections of 2026-09-18, and it stays
+   invisible unless the rule is written down as a rule.
 2. **EVOLUTION AUDIT** — every scheduled cycle in the window, what each did, and what it wrote to
    `evolution_log` and `evolution_rejections`. If a cycle did nothing, give the exact mechanism that
    stopped it, quoted from the code. Distinguish "the loop decided not to act" from "the loop never
@@ -81,9 +84,30 @@ Keep these, in this order. A section with nothing to report says so and says why
   it.
 - **No recommendation is implemented.** See the one rule.
 
+## Two rules that bind every report, added 2026-09-18
+
+**Report the sweep, not the survivors.** Any report that tests more than one variant, threshold or
+horizon states three numbers together: **how many comparisons it made, how many results at
+|t| > 1.96 chance alone predicts at that count (n x 0.05), and how many it actually found.** Item 7
+made 28 comparisons, chance predicted about 1.4, and it found exactly 2 — which is why neither was
+called a finding. A report that lists only the cells that worked is reporting a selection, not a
+result. Any survivor that matters carries a split-half or an out-of-sample check before it is called
+anything stronger than a lead.
+
+**Restate the standing epistemic note, every time, until the sample changes.** The evidence base is
+one month, one regime, 19 names, 22 closed trades; the regime was falling, the equal-weight basket
+lost 5.12%, 15 of 19 names declined, every |t| the project has produced is under 2.2, and the system
+has never seen an up-tape. Nothing measured here is refuted — it is **unsupported**, which is a
+different claim. Attention-driven buying in particular is historically a risk-on phenomenon, and a
+crowd arriving during a decline is not the event the thesis is about. Two consequences, binding in
+both directions: **no component is killed on this sample, and none is trusted on it either.** A
+negative result on one regime is weak; a positive result on one regime is weaker, because deleting
+things costs optionality while acting on them costs money.
+
 ## Mechanics
 
-- Read-only database access is sufficient and preferred.
+- Read-only database access is sufficient and required: the `pulse_readonly` role (migration 017)
+  holds SELECT and nothing else. The routine must never carry a write-capable credential.
 - Commit the artifact to `reviews/` on `main` with a `docs:` commit. Nothing else in the repo is
   touched.
 - The review's own commit is the only write the run makes.
