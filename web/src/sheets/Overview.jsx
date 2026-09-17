@@ -82,7 +82,7 @@ export default function Overview({ onClose }) {
           <Section
             icon={Activity}
             title="How the book is doing"
-            note="Realized is what closed trades actually returned. Unrealized is what open trades are showing right now."
+            note="Realized is what closed trades actually returned. Unrealized is what open trades are showing right now. Excess expectancy measures each trade against an equal-weight basket of the whole watchlist over that trade's own window, and it is the one to read first: plain expectancy falls when the universe falls, whether or not the entries picked anything."
           >
             <dl className="stats">
               <Stat icon={ArrowDownRight} label="Realized">
@@ -98,6 +98,14 @@ export default function Overview({ onClose }) {
               </Stat>
               <Stat icon={Percent} label="Win rate">
                 <Num value={totals.win_rate} format={ratioAsPct} reason="no closed trades" />
+              </Stat>
+              <Stat icon={Target} label="Excess expectancy">
+                <Num
+                  value={totals.excess_expectancy}
+                  format={signedPct}
+                  tone={pnlTone(totals.excess_expectancy)}
+                  reason="no closed trades with a basket price"
+                />
               </Stat>
               <Stat icon={Target} label="Expectancy">
                 <Num

@@ -9,7 +9,7 @@ const ROLLUP_SQL = `
     ) AS w("window", span)
   ),
   scoped AS (
-    SELECT s.id AS strategy_id, w."window", t.id AS trade_id, t.exit_ts, t.pnl_pct
+    SELECT s.id AS strategy_id, w."window", t.id AS trade_id, t.exit_ts, t.pnl_pct, x.excess_pnl_pct
     FROM strategies s
     CROSS JOIN windows w
     LEFT JOIN trades t
@@ -18,6 +18,7 @@ const ROLLUP_SQL = `
      AND t.pnl_pct IS NOT NULL
      AND t.exit_ts IS NOT NULL
      AND (w.span IS NULL OR t.exit_ts > now() - w.span)
+    LEFT JOIN trade_excess x ON x.trade_id = t.id
   ),
   agg AS (
     SELECT strategy_id,
@@ -27,7 +28,9 @@ const ROLLUP_SQL = `
            avg(pnl_pct) FILTER (WHERE pnl_pct > 0) AS avg_win_pct,
            avg(pnl_pct) FILTER (WHERE pnl_pct <= 0) AS avg_loss_pct,
            avg(pnl_pct) AS mean_pnl_pct,
-           stddev_samp(pnl_pct) AS sd_pnl_pct
+           stddev_samp(pnl_pct) AS sd_pnl_pct,
+           (count(excess_pnl_pct))::int AS excess_trades_n,
+           avg(excess_pnl_pct) AS excess_expectancy
     FROM scoped
     GROUP BY strategy_id, "window"
   ),
@@ -51,7 +54,8 @@ const ROLLUP_SQL = `
     GROUP BY strategy_id, "window"
   )
   INSERT INTO strategy_stats (strategy_id, "window", trades_n, win_rate, avg_win_pct, avg_loss_pct,
-                              expectancy, max_drawdown, sharpe_naive, updated_at)
+                              expectancy, excess_expectancy, excess_trades_n, max_drawdown,
+                              sharpe_naive, updated_at)
   SELECT a.strategy_id,
          a."window",
          a.trades_n,
@@ -63,6 +67,8 @@ const ROLLUP_SQL = `
            ELSE a.wins::numeric / a.trades_n * COALESCE(a.avg_win_pct, 0)
               + (a.trades_n - a.wins)::numeric / a.trades_n * COALESCE(a.avg_loss_pct, 0)
          END,
+         a.excess_expectancy,
+         a.excess_trades_n,
          d.max_drawdown,
          CASE
            WHEN a.trades_n < 2 THEN NULL
@@ -77,6 +83,8 @@ const ROLLUP_SQL = `
     avg_win_pct = EXCLUDED.avg_win_pct,
     avg_loss_pct = EXCLUDED.avg_loss_pct,
     expectancy = EXCLUDED.expectancy,
+    excess_expectancy = EXCLUDED.excess_expectancy,
+    excess_trades_n = EXCLUDED.excess_trades_n,
     max_drawdown = EXCLUDED.max_drawdown,
     sharpe_naive = EXCLUDED.sharpe_naive,
     updated_at = EXCLUDED.updated_at

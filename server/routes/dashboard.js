@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import express from 'express';
-import { SHADOW_SLIPPAGE_PCT_PER_SIDE, WIKI_ARTICLES } from '../config.js';
+import { SHADOW_SLIPPAGE_PCT_PER_SIDE, WATCHLIST, WIKI_ARTICLES } from '../config.js';
 import { pool } from '../db/pool.js';
 import { describeBlock } from '../strategies/engine.js';
 
@@ -16,7 +16,10 @@ const SUMMARY_SIGNAL_LIMIT = 20;
 const isoUtc = (column) => `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
 
 const WATCHLIST_SQL = `
-  WITH bounds AS (
+  WITH universe AS (
+    SELECT symbol, name FROM tickers WHERE symbol = ANY($3::text[])
+  ),
+  bounds AS (
     SELECT (date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS last_hour,
            ((date_trunc('hour', now() AT TIME ZONE 'UTC') - make_interval(hours => $1::int - 1)) AT TIME ZONE 'UTC')
              AS first_hour
@@ -27,7 +30,7 @@ const WATCHLIST_SQL = `
   ),
   hourly AS (
     SELECT t.symbol, f.ts, avg(f.mention_zscore)::float8 AS mention_zscore
-    FROM tickers t
+    FROM universe t
     CROSS JOIN LATERAL (
       SELECT (date_trunc('hour', fx.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS ts, fx.mention_zscore
       FROM features fx
@@ -39,7 +42,7 @@ const WATCHLIST_SQL = `
     SELECT t.symbol,
            json_agg(json_build_object('ts', ${isoUtc('s.ts')}, 'mention_zscore', h.mention_zscore)
                     ORDER BY s.ts) AS points
-    FROM tickers t
+    FROM universe t
     CROSS JOIN hour_slot s
     LEFT JOIN hourly h ON h.symbol = t.symbol AND h.ts = s.ts
     GROUP BY t.symbol
@@ -47,7 +50,7 @@ const WATCHLIST_SQL = `
   latest AS (
     SELECT t.symbol, f.ts, f.mention_zscore, f.social_velocity, f.exhaustion_score,
            f.attention_breadth, f.attention_breadth_of
-    FROM tickers t
+    FROM universe t
     CROSS JOIN LATERAL (
       SELECT ts, mention_zscore, social_velocity, exhaustion_score,
              attention_breadth, attention_breadth_of
@@ -91,7 +94,7 @@ const WATCHLIST_SQL = `
          COALESCE(sp.points, '[]'::json) AS mention_zscore_sparkline,
          a.max_conviction,
          COALESCE(a.signals, '[]'::json) AS active_signals
-  FROM tickers t
+  FROM universe t
   LEFT JOIN price p ON p.symbol = t.symbol
   LEFT JOIN latest f ON f.symbol = t.symbol
   LEFT JOIN sparkline sp ON sp.symbol = t.symbol
@@ -142,6 +145,9 @@ const CLOSED_TRADES_SQL = `
          t.entry_ts,
          t.exit_ts,
          t.pnl_pct::float8 AS pnl_pct,
+         x.basket_pnl_pct::float8 AS basket_pnl_pct,
+         x.excess_pnl_pct::float8 AS excess_pnl_pct,
+         x.basket_members::int AS basket_members,
          t.trade_max_adverse_pct::float8 AS trade_max_adverse_pct,
          t.hold_hours::float8 AS hold_hours,
          CASE
@@ -157,15 +163,17 @@ const CLOSED_TRADES_SQL = `
   JOIN strategies st ON st.id = t.strategy_id
   JOIN signals es ON es.id = t.entry_signal_id
   LEFT JOIN signals xs ON xs.id = t.exit_signal_id
+  LEFT JOIN trade_excess x ON x.trade_id = t.id
   WHERE t.status = 'closed'
   ORDER BY t.exit_ts DESC NULLS LAST, t.id DESC
 `;
 
 const STRATEGIES_SQL = `
   WITH closed AS (
-    SELECT id, strategy_id, pnl_pct, exit_ts
-    FROM trades
-    WHERE status = 'closed' AND pnl_pct IS NOT NULL
+    SELECT t.id, t.strategy_id, t.pnl_pct, t.exit_ts, x.excess_pnl_pct
+    FROM trades t
+    LEFT JOIN trade_excess x ON x.trade_id = t.id
+    WHERE t.status = 'closed' AND t.pnl_pct IS NOT NULL
   ),
   stats AS (
     SELECT strategy_id,
@@ -173,7 +181,10 @@ const STRATEGIES_SQL = `
            (count(*) FILTER (WHERE pnl_pct > 0))::float8 / count(*) AS win_rate,
            (avg(pnl_pct) FILTER (WHERE pnl_pct > 0))::float8 AS avg_win_pct,
            (avg(pnl_pct) FILTER (WHERE pnl_pct <= 0))::float8 AS avg_loss_pct,
-           avg(pnl_pct)::float8 AS expectancy
+           avg(pnl_pct)::float8 AS expectancy,
+           avg(excess_pnl_pct)::float8 AS excess_expectancy,
+           count(excess_pnl_pct)::int AS excess_trades_n,
+           (count(*) FILTER (WHERE excess_pnl_pct > 0))::int AS beat_basket_n
     FROM closed
     GROUP BY strategy_id
   ),
@@ -217,6 +228,9 @@ const STRATEGIES_SQL = `
          st.avg_win_pct,
          st.avg_loss_pct,
          st.expectancy,
+         st.excess_expectancy,
+         COALESCE(st.excess_trades_n, 0) AS excess_trades_n,
+         COALESCE(st.beat_basket_n, 0) AS beat_basket_n,
          d.max_drawdown,
          COALESCE(c.points, '[]'::json) AS equity_curve
   FROM strategies s
@@ -257,9 +271,10 @@ const SIGNALS_SQL = `
 
 const PNL_TOTALS_SQL = `
   WITH closed AS (
-    SELECT id, exit_ts, pnl_pct
-    FROM trades
-    WHERE status = 'closed' AND pnl_pct IS NOT NULL
+    SELECT t.id, t.exit_ts, t.pnl_pct, x.excess_pnl_pct
+    FROM trades t
+    LEFT JOIN trade_excess x ON x.trade_id = t.id
+    WHERE t.status = 'closed' AND t.pnl_pct IS NOT NULL
   ),
   cumulative AS (
     SELECT row_number() OVER (ORDER BY exit_ts, id) AS ord,
@@ -281,6 +296,9 @@ const PNL_TOTALS_SQL = `
          (avg(pnl_pct) FILTER (WHERE pnl_pct > 0))::float8 AS avg_win_pct,
          (avg(pnl_pct) FILTER (WHERE pnl_pct <= 0))::float8 AS avg_loss_pct,
          avg(pnl_pct)::float8 AS expectancy,
+         avg(excess_pnl_pct)::float8 AS excess_expectancy,
+         count(excess_pnl_pct)::int AS excess_trades_n,
+         (count(*) FILTER (WHERE excess_pnl_pct > 0))::int AS beat_basket_n,
          sum(pnl_pct)::float8 AS total_pnl_pct,
          (SELECT max_drawdown FROM drawdown) AS max_drawdown
   FROM closed
@@ -348,15 +366,43 @@ const SHADOW_CLOSED_SQL = `
   LIMIT $1::int
 `;
 
+/* Every closed shadow row keeps the per-side slippage it was priced under, on both legs, so a book
+   that spans a change to the constant is a book measured on two different rulers. `priced` does the
+   conversion in one expression: it backs the stored constant out to recover the raw marks —
+   entry_price = mark * (1 + d*s/100) and exit_price = mark * (1 - d*s/100), where d is +1 long and
+   -1 short — and re-applies the constant in force now. shadow_expectancy is what the book recorded
+   at the time; shadow_expectancy_restated is that same history under today's assumption, and the
+   two are equal for any row already priced under it. They are measured over different samples when
+   a row is missing a fill price, which is why restated carries its own n. */
 const SHADOW_STATS_SQL = `
-  WITH agg AS (
+  WITH restated AS (
+    SELECT t.strategy_id,
+           t.pnl_pct,
+           CASE WHEN s.params->>'side' = 'short' THEN -1 ELSE 1 END AS direction,
+           t.entry_price, t.exit_price, t.slippage_pct_per_side
+    FROM shadow_trades t
+    JOIN strategies s ON s.id = t.strategy_id
+    WHERE t.status = 'closed' AND t.pnl_pct IS NOT NULL AND t.exit_ts IS NOT NULL
+  ),
+  priced AS (
+    SELECT strategy_id,
+           pnl_pct,
+           direction
+             * (exit_price / (1 - direction * slippage_pct_per_side / 100) * (1 - direction * $1::numeric / 100)
+                - entry_price / (1 + direction * slippage_pct_per_side / 100) * (1 + direction * $1::numeric / 100))
+             / (entry_price / (1 + direction * slippage_pct_per_side / 100) * (1 + direction * $1::numeric / 100))
+             * 100 AS restated_pnl_pct
+    FROM restated
+  ),
+  agg AS (
     SELECT strategy_id,
            (count(pnl_pct))::int AS trades_n,
            (count(pnl_pct) FILTER (WHERE pnl_pct > 0))::int AS wins,
            avg(pnl_pct) FILTER (WHERE pnl_pct > 0) AS avg_win_pct,
-           avg(pnl_pct) FILTER (WHERE pnl_pct <= 0) AS avg_loss_pct
-    FROM shadow_trades
-    WHERE status = 'closed' AND pnl_pct IS NOT NULL AND exit_ts IS NOT NULL
+           avg(pnl_pct) FILTER (WHERE pnl_pct <= 0) AS avg_loss_pct,
+           avg(restated_pnl_pct) AS restated_expectancy,
+           (count(restated_pnl_pct))::int AS restated_trades_n
+    FROM priced
     GROUP BY strategy_id
   )
   SELECT s.id::int AS strategy_id,
@@ -370,8 +416,11 @@ const SHADOW_STATS_SQL = `
             ELSE a.wins::numeric / a.trades_n * COALESCE(a.avg_win_pct, 0)
                + (a.trades_n - a.wins)::numeric / a.trades_n * COALESCE(a.avg_loss_pct, 0)
           END)::float8 AS shadow_expectancy,
+         a.restated_expectancy::float8 AS shadow_expectancy_restated,
+         COALESCE(a.restated_trades_n, 0) AS shadow_restated_trades_n,
          COALESCE(r.trades_n, 0) AS real_trades_n,
-         r.expectancy::float8 AS real_expectancy
+         r.expectancy::float8 AS real_expectancy,
+         r.excess_expectancy::float8 AS real_excess_expectancy
   FROM strategies s
   LEFT JOIN agg a ON a.strategy_id = s.id
   LEFT JOIN strategy_stats r ON r.strategy_id = s.id AND r."window" = 'all'
@@ -520,6 +569,13 @@ const ACTIVE_STRATEGIES_SQL = `
 
 const OPEN_TRADE_KEYS_SQL = `
   SELECT strategy_id::int AS strategy_id, symbol FROM trades WHERE status = 'open'
+`;
+
+const WARNINGS_SQL = `
+  SELECT kind, subject, detail, first_seen, last_seen
+  FROM system_warnings
+  WHERE cleared_at IS NULL
+  ORDER BY first_seen, kind, subject
 `;
 
 const EVOLUTION_SQL = `
@@ -696,7 +752,7 @@ export const dashboardRoutes = express.Router();
 dashboardRoutes.get(
   '/watchlist',
   route(async (req, res) => {
-    const { rows } = await pool.query(WATCHLIST_SQL, [SPARKLINE_HOURS, ACTIVE_SIGNAL_HOURS]);
+    const { rows } = await pool.query(WATCHLIST_SQL, [SPARKLINE_HOURS, ACTIVE_SIGNAL_HOURS, WATCHLIST]);
     res.json(rows);
   })
 );
@@ -722,7 +778,7 @@ dashboardRoutes.get(
     const [open, closed, byStrategy, drops] = await Promise.all([
       pool.query(SHADOW_OPEN_SQL),
       pool.query(SHADOW_CLOSED_SQL, [SHADOW_CLOSED_LIMIT]),
-      pool.query(SHADOW_STATS_SQL),
+      pool.query(SHADOW_STATS_SQL, [SHADOW_SLIPPAGE_PCT_PER_SIDE]),
       pool.query(SHADOW_DROPS_SQL),
     ]);
     res.json({
@@ -761,6 +817,9 @@ dashboardRoutes.get(
           avg_win_pct: row.avg_win_pct,
           avg_loss_pct: row.avg_loss_pct,
           expectancy: row.expectancy,
+          excess_expectancy: row.excess_expectancy,
+          excess_trades_n: row.excess_trades_n,
+          beat_basket_n: row.beat_basket_n,
           max_drawdown: row.max_drawdown,
         },
         equity_curve: row.equity_curve,
@@ -773,6 +832,16 @@ dashboardRoutes.get(
   '/signals',
   route(async (req, res) => {
     const { rows } = await pool.query(SIGNALS_SQL, [SIGNAL_FEED_LIMIT]);
+    res.json(rows);
+  })
+);
+
+// Standing only: a warning that has cleared is kept in the table but is no longer a condition of
+// the system, and a health surface that keeps showing resolved faults teaches its reader to skim.
+dashboardRoutes.get(
+  '/warnings',
+  route(async (req, res) => {
+    const { rows } = await pool.query(WARNINGS_SQL);
     res.json(rows);
   })
 );

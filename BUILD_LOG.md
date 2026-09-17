@@ -8,11 +8,423 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 | 1 — skeleton + data in | **PASSED** (amended gate) | 2026-08-11 |
 | 2 — features + one dumb strategy | **PASSED** | 2026-08-11 |
 | 3 — dashboard | **PASSED** | 2026-08-11 |
-| 4 — full strategy set + stats | **built; gate PARTIAL** — live conviction lifecycle deferred to next open | 2026-08-11 |
-| 5 — evolution | **built; gate PARTIAL** — inherits phase 4's deferred live lifecycle | 2026-08-11 |
+| 4 — full strategy set + stats | **PASSED** — closed on the production record, not a supervised run | 2026-09-17 |
+| 5 — evolution | **PASSED** — the inherited deferral closed with phase 4's | 2026-09-17 |
 | A — attention: Wikipedia | **PASSED** | 2026-08-18 |
 
 ---
+
+---
+
+## SECOND SET OF RULINGS — 2026-09-18
+
+Rulings on the implementation report of 2026-09-17. Four items: the read-only credential, item 7,
+BITF, and a candidate item recorded for later. Items 6 and the Sunday cycle were ruled correct as
+they stand and needed no work.
+
+### The verification that was asked for could not be performed
+
+The ruling opened with "verify the deployed tick runs current code (3 active strategies, $100 cap,
+no gate)". **It does not, because the work was never committed.** `main` and `origin/main` are both
+still at `bd97642`, the commit this session started from; all 22 files remain uncommitted in the
+working tree. Railway therefore still deploys the pre-ruling code.
+
+The deployed service is alive and running — the newest `features` row at the time of checking was
+4m43s old — and it has written **no `system_warnings` row in the 1h41m since the manual tick that
+created the only one there is.** The new code writes one every tick, so that frozen `last_seen` is
+positive evidence of old code running, not merely absence of evidence for new.
+
+What this means in the meantime is worth stating plainly, because it is a genuinely mixed state:
+**migrations 012–017 are applied to the production database while the code that understands them is
+not deployed.** squeeze-setup is `active` in the database right now and the old `strategyRunner`
+will trade it on its next tick — under the $50 cap and the 0.4 conviction gate, because those are
+the values in the deployed build. The schema additions are all additive and the old code ignores
+them, so nothing is broken; it is simply that three of the ten rulings are live in the data and not
+in the behaviour.
+
+### Read-only credential for the monthly review routine — migration 017
+
+`pulse_readonly`: `LOGIN`, `NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`, `CONNECT` on the
+database, `USAGE` on `public`, `SELECT` on all 16 tables and views, and `ALTER DEFAULT PRIVILEGES`
+so tables created by later migrations are readable without revisiting the file. Sequence `USAGE` is
+deliberately not granted — it is a write capability and a reader has no use for `nextval`.
+
+Verified after applying: `can_insert_trades = false`, `can_read_view = true` on `trade_excess`, and
+exactly one privilege type granted across all objects — `SELECT`, 16 times, with zero rows of
+anything else.
+
+**The role has no password, deliberately: a password in a migration is a password in git.** It can
+log in but cannot authenticate until the owner sets one out of band. That is the last step and it is
+the owner's to take.
+
+### Item 7 — both experiments run, both fail
+
+Full report: `reviews/2026-09-18-item-7-inverted-attention.md`. Replay only; nothing deployed, no
+seed changed, no borrow path built, no order placed.
+
+**The headline is a correction to the review that motivated the item.** §6 of the month-one review
+read elevated attention as bearish, on 1-of-2 breadth events returning −3.35% over five days against
+a −2.44% watchlist baseline. Those were averages over *different sets of days*. Measured against the
+basket over each event's own window, the 5-day excess is **−0.22%, t = −0.39**. The breadth events
+were not worse names; they were days the whole watchlist fell. **It is the same un-matched-window
+error item 1 was created to prevent, one level down.**
+
+Both experiments then fail in that same direction:
+
+- **(a) Avoiding elevated attention does not help.** Seed 3's `mention_zscore < 1` is already a p90
+  filter. Removing it entirely *improves* excess from −1.07% to −0.71%; tightening it to `< 0` makes
+  it −1.86%, the worst row tested. Adding `attention_breadth = 0` produces a table row identical to
+  the baseline in every column — seed 3's entries never once landed on an elevated-breadth tick.
+- **(b) The attention-spike short makes money and still loses.** Every short variant has positive
+  absolute expectancy, up to **+1.37% with 14 wins in 23** — and every one has negative excess. Over
+  those same windows the basket fell 1.77%, so shorting the whole watchlist would have returned
+  +1.77%. It captured +1.37% of an available +1.77%: **short beta wearing a signal's clothes.** The
+  long controls on the same entries sit at excess −0.18% and −0.03%, and both sides cannot be flat
+  against their benchmarks if attention carried direction.
+
+**`b2` is the single most valuable artefact this session produced**, because on any pre-item-1
+dashboard it reads as the first profitable strategy the system has ever found. Item 1 is eleven days
+old and has already caught one false discovery.
+
+Two findings fell out that are not about attention and are worth keeping:
+
+- **Any strategy gating on `wiki_views_zscore` is also gating on "has a Wikipedia article we
+  mapped"** — 7 of 19 symbols carry NULL, and the engine's rule that NULL never satisfies a condition
+  silently removes them from the universe. The 1.0 pp gap between variants `a4` and `a4b` is almost
+  entirely that, not a market effect.
+- **The entry blocks move excess in the wrong direction from zero.** Seed 3 is −1.07%; strip its
+  attention leg, −0.71%; enter on a pure attention spike, −0.18%; enter on nothing, 0.00% by
+  construction. On this tape the current feature vocabulary does not distinguish one watchlist name
+  from another.
+
+Discipline note on the statistics, since this was a 28-comparison sweep: at α = 0.05 chance predicts
+≈ 1.4 results at |t| > 1.96, and the sweep found exactly 2. Both are reported as leads, neither as a
+finding, and the Bonferroni threshold across 28 tests (|t| ≈ 3.0) is not approached by anything.
+
+### BITF removed from the watchlist
+
+Delisted since week one: **0 `market_snapshots` rows in 37 days** while still accumulating 2,289
+social and 10,647 feature rows, occupying a 20th slot every basket already measured over 19.
+
+Removed from `WATCHLIST` and `WIKI_ARTICLES`, which is what stops the ingest workers — all six
+iterate that constant. **Its `tickers` row and its history stay**: 12,936 rows reference the symbol
+and deleting it would destroy a month of tape to tidy a list.
+
+The three code paths that read `tickers` rather than `WATCHLIST` were checked rather than assumed.
+`strategyRunner`'s eligibility filter and `evolution`'s holdout symbols both already excluded it
+(no recent price; `avg_volume_30d` NULL), and `trade_excess` excludes it through the 24-hour price
+bound added in migration 016. **The dashboard's `/api/watchlist` did not** — it scanned `tickers`
+directly and would have kept showing BITF as a permanently blank row. It now resolves the watchlist
+through a `universe` CTE bound to the config constant, which keeps `config.js` the single source of
+truth rather than introducing a membership column. Verified: 19 rows, BITF absent.
+
+### Candidate item recorded — universe selection and rotation
+
+**Not a ruling to implement. A mini-phase to be scheduled after item 7's report is read.**
+
+The watchlist has been static since 2026-08-11 and fell **5.12% equal-weight over the full tape,
+with 15 of 19 names declining** (first-to-last snapshot per symbol). Every strategy the system has
+is a long-only selector operating inside a set of 19 names that nobody has revisited, and item 7's
+§5 finding is that the entries do not distinguish between the names available to them — which is a
+statement about the universe as much as about the entries.
+
+BITF is the concrete case that the list needs maintenance at all: it sat in the watchlist for 37 days
+after being delisted and nothing in the system noticed. The candidate scope is selection criteria,
+a rotation cadence, and the membership history that `trade_excess` will need the moment the list
+stops being constant — its schema comment already names that dependency.
+
+---
+
+## MONTH ONE REVIEW — OWNER RULINGS IMPLEMENTED 2026-09-17
+
+Ten rulings on `reviews/2026-09-17-month-one.md`, ruled by the owner and implemented here. Items 6
+and 7 are **not** implemented: both were sequenced behind item 1's readout, and item 1 has now read
+out against them. See the last section.
+
+### 1. Excess return over the equal-weight basket — READ OUT
+
+Migration 012 adds the `trade_excess` view and two `strategy_stats` columns. The view computes, per
+closed trade, what an equal-weight basket of the whole watchlist did over that trade's own hold
+window — last snapshot at or before `entry_ts` to last at or before `exit_ts`, averaged over the
+members that have a price on both sides — and subtracts it. For a short it subtracts the negative of
+that basket, since the benchmark for a short is shorting the same basket rather than holding it.
+
+It is a view, not columns on `trades`. That makes it correct for the 23 trades that closed before it
+existed, with no backfill, and it cannot drift from the prices it is derived from. The cost is one
+index lookup per watchlist member per leg per trade, which is why it is read by the hourly rollup
+and the dashboard and never inside the 5-minute tick.
+
+**The readout, from `strategy_stats` after a real `npm run stats`:**
+
+| strategy | window | n | expectancy | basket | **excess expectancy** | beat the basket |
+|---|---|---:|---:|---:|---:|---:|
+| quiet-accumulation | the review's 20 | 20 | −3.708% | −1.775% | **−1.932%** | 6 of 20 |
+| quiet-accumulation | all closed, 2026-09-17 | 22 | −3.088% | −1.393% | **−1.695%** | 7 of 22 |
+| quiet-accumulation | 7d | 6 | −3.436% | | **−1.832%** | |
+| social-breakout | all (smoke test) | 3 | −0.068% | −0.031% | −0.037% | 0 of 3 |
+
+The 20-trade reconstruction reproduces the review's −3.708% exactly, which is the check that the
+window alignment is right.
+
+**What it settles.** H1 predicted that if excess expectancy were ≈ 0 while absolute expectancy was
+−3.7%, the strategy would be a beta machine and every threshold question moot. It is not ≈ 0. About
+48% of the loss is the tape and **52% is the entries selecting worse than a random equal-weight
+long from the same universe on the same days**. Spread of the excess series is 5.19 pp, so t = −1.66
+on n = 20 (p ≈ 0.11): negative, and not yet separable from zero at this sample.
+
+So H1 is half right and its consolation is gone. The entries are not merely riding a falling tape;
+they are underperforming it, and there is no version of this where fixing the exits fixes the sign.
+That is what blocks item 6 below.
+
+### 2. The evolution deadlock — broken by owner activation
+
+**squeeze-setup is active** (migration 014, `evolution_log` id 2, action `activate`). Its 2026-08-11
+data blocker has lapsed — `days_to_cover` is populated for 19 of 20 tickers — and a replay of its
+entry block over the last 31 days shows 439 full-fire ticks. It took no trades because
+`strategyRunner` reads `status = 'active'` and nothing could ever change its status.
+
+**The mechanism is now recorded as the fix, not a one-off.** Migration 013 adds `activate` to the
+`evolution_action` enum, and `FIRABILITY_SQL` in `index.js` now treats `promote` **or** `activate` as
+evidence a strategy is meant to be active (`meant_to_be_active`, formerly
+`promoted_and_not_retired`). Owner activation is a legitimate path into `active` alongside loop
+promotion, and it is a logged decision for the same reason a promote is: `reconcileFirability` reads
+those rows to decide whether to restore a candidate after an unfirability demotion, and a status set
+with no row behind it is indistinguishable from a mistake. The circularity — the loop needs two
+qualifiers, only candidates can supply the second, and only the loop can wake a candidate — is
+broken by there being a second door.
+
+**`MIN_QUALIFIERS` stays 2.** Ranking one strategy against itself produces a decision with no
+information in it, which is worse than no decision.
+
+**Swaps remain blocked, and this is accepted.** `retirementAllowed = active.length - 1 >=
+MIN_ACTIVE_STRATEGIES`. At 3 active, `3 − 1 = 2 >= 3` is false, so nothing can be retired. The loop
+can still propose, replay and **promote as an addition**, and the first such promotion takes the
+active count to 4, at which point `4 − 1 = 3 >= 3` holds and swaps unlock. The loop grows before it
+prunes. That ordering is correct: the month's failure was a portfolio of one, and a mechanism that
+adds before it removes cannot make that worse.
+
+**The warnings moved into the database.** Migration 015 adds `system_warnings`, keyed on
+`(kind, subject)` so a condition that stays true for a month is one re-stamped row rather than 8,640
+rows. `warnInactiveSeeds` and the `FLOOR BREACHED` branch of `reconcileFirability` now write there as
+well as to the console, `GET /api/warnings` serves the standing ones, and the Health sheet leads with
+them. `warnInactiveSeeds` moved from boot to the tick, because a row whose `last_seen` never advances
+cannot be told from a warning whose writer has stopped running.
+
+This is the ruling with the sharpest lesson behind it. Both warnings fired correctly, on schedule,
+for the entire month. `warnInactiveSeeds` said on every boot that seeds 2 and 4 would never be
+evaluated. `FLOOR BREACHED` said on every tick that the active count was 2 against a floor of 3. They
+went to Railway logs, so as far as the database, the dashboard and the review were concerned they did
+not exist. **A warning that is only ever printed has no reader.**
+
+Publishing a warning can never fail the tick it warns about — `publishWarnings` swallows and logs,
+the same rule `recordRejection` and the hub heartbeat follow.
+
+### 3. The seed-1 / price-filter conflict — cap raised to $100
+
+`MAX_PRICE` in `strategyRunner` and `REPLAY_MAX_PRICE` in `evolution` both move from 50 to 100. All
+eight of social-breakout's complete entry signals last month were ASTS at $60–75, every one excluded
+by its own price filter — a fire rate of zero by construction, wearing starvation's clothes.
+
+The $50 cap was a day-one spec choice with no evidence under it. ASTS and RKLB are legitimate
+watchlist members and $1,000 notional sizes fine at $75 (13 shares). **Seed 1 stays active and becomes
+capable of trading for the first time.** Both constants move together and must continue to: the
+replay exists to score a candidate against the universe the runner actually trades, and a divergence
+there is a silent correctness bug, not a config drift.
+
+### 4. The lapsed 2026-08-26 review — done
+
+**Slippage: `SHADOW_SLIPPAGE_PCT_PER_SIDE` 0.05 → 0.15.** Anchored on the median of measured fills
+against the nearest 5-minute snapshot: 0.142% median adverse on 24 entries, 0.158% on 20 exits. The
+median rather than the mean, because one bad exit drags the mean (0.341%) and the median is what a
+typical fill costs. **The caveat travels with the number**: snapshots are 5-minute bars, so part of
+the measured gap is intra-bar drift rather than spread, which makes 0.15 an upper bound on the true
+per-side cost. It is still the right order of magnitude to say 0.05 was too generous by about 3×.
+
+**History is restated rather than rewritten.** Every closed shadow row keeps the constant it was
+priced under in `shadow_trades.slippage_pct_per_side`, so a book spanning a change is a book measured
+on two rulers. `SHADOW_STATS_SQL` now backs the stored constant out of both legs to recover the raw
+marks and re-applies the current one, and `/api/shadow` reports `shadow_expectancy` (as priced) beside
+`shadow_expectancy_restated`. Verified by identity: restating a row at the constant it was already
+priced under reproduces its stored `pnl_pct` to 10 decimal places, on all 44 closed rows.
+
+| strategy | closed | as priced (0.05) | restated (0.15) | difference |
+|---|---:|---:|---:|---:|
+| social-breakout | 2 | +4.906% | +4.697% | −0.21 pp |
+| quiet-accumulation | 42 | −3.263% | −3.456% | −0.19 pp |
+
+**`mentions_24h >= 25`: HELD, unchanged.** The gate is met on 3.9% of ticks and is the second-most
+common blocker at 4-of-5, so the mechanical case for loosening it is real. It is refused on the
+direction of the evidence. Every attention measurement on this tape reads bearish: `mention_zscore >
+3` is the only positive-expectancy leg in the system, 1-of-2 breadth events returned −3.35% over five
+days against a −2.44% baseline, and the single 2-of-2 event fell 6.15%. Loosening an attention gate
+in order to take **more** attention-longs is exactly backwards. The threshold is not the thing that
+is wrong; the sign is.
+
+### 5. The conviction gate — dropped; the call and the log stay
+
+`MIN_CONVICTION = 0.4` is gone from both the live and the shadow path in `strategyRunner`.
+Across the 60 scored signals that reached a closed trade, corr(conviction, pnl) = 0.041 and Spearman
+= 0.094; the score took 8 distinct values over all 110 scored signals with 44% of the mass on 0.72;
+and on forward returns the 39 the gate threw away beat the 68 it let through at 24, 72 and 120 hours. It was not gating on information.
+
+**The Claude call and the `signals.conviction` write stay**, and the reason is written into
+`convictionFor` so nobody later deletes a call that gates nothing: 110 scored signals with outcomes
+attached is the dataset a better conviction question gets designed against, and that dataset only
+grows if the score keeps being taken.
+
+**One thing deliberately not changed.** A spent `MAX_CONVICTION_CALLS_PER_DAY` budget still skips the
+trade. That skip now gates on a score that gates nothing, which is arguably incoherent — but it is a
+cost control rather than a conviction gate, the ruling was about the 0.4 threshold, and peak usage
+has been 13 calls against a cap of 50 so it has never bound. Flagged rather than quietly widened.
+
+### 8. Phases 4 and 5 — gates closed on the production record
+
+See the dedicated entry below.
+
+### 9. Seed 4's dead leg — recalibrated, and the real blocker named
+
+`price_momentum_2d > 30` → `> 10`, derived from 32,860 entry-window feature ticks over the preceding
+31 days:
+
+| percentile of `price_momentum_2d` | value |
+|---|---:|
+| 50th | −1.08 |
+| 90th | +6.67 |
+| 95th | **+10.73** |
+| 99th | +16.98 |
+| 99.9th | +24.33 |
+| observed maximum | +30.14 |
+
+`> 30` sat above the 99.9th percentile and 0.14 pp under the observed maximum. It fired once
+in 31 days. `> 10` is the 95th percentile — 1,726 ticks, 5.25% — which is what "ran up hard" means on
+this universe.
+
+**It does not revive the seed, and the recalibration is what proves why.** `exhaustion_score` is the
+mean of four booleans, so `> 0.9` means all four, which happened on **16 of 32,860 ticks (0.049%)**.
+The two legs are independent — corr 0.017 — so their joint rate is the product of two rare events at
+any threshold. On those 16 ticks the **maximum** 2-day momentum was 8.07% and the median 2.06%, so
+even at 10 the joint count is 0, and at the far looser `exhaustion_score > 0.7` it is 12. The dead leg
+was never only the threshold; it is that seed 4 asks for a name that is simultaneously exhausted and
+still running, and `exhaustion_score` is high precisely when a name has already rolled over.
+
+**Seed 4 stays `candidate`.** Untouched by this review: there is no borrow check anywhere, the short
+path has never executed against the broker, and `evolution()` explicitly refuses to promote a short.
+`seeds.js` supplies only a birth status, so changing the threshold updates the live row's params on
+the next tick while its status stays exactly where it is.
+
+### 10. The monthly review becomes a scheduled artifact
+
+`reviews/STANDARD.md` records the sections and the standard; `reviews/2026-09-17-month-one.md` is the
+worked example the routine is told to match. Cloud routine **`trig_01ErwjG4ofuJbh9bsRuLh8hi`**,
+`0 12 17 * *` UTC (09:00 São Paulo, 08:00 ET — before the open, so no partial session muddies the
+window), `claude-opus-5`, first run **2026-10-17**.
+
+Its first instruction is to prove it can read the database and, if it cannot, to write
+`REVIEW NOT EXECUTED` naming the exact error and change nothing else. That is not boilerplate: the
+2026-08-15 gate routine hit a 403 egress policy, correctly refused to produce a verdict, and then
+cost three days because nobody read its refusal either. The routine's one rule is that the review
+changes nothing — the only write a run makes is committing its own artifact.
+
+**It will refuse on 2026-10-17 as configured.** The routine's environment carries no `DATABASE_URL`,
+so the run has nothing to read. This is stated here rather than solved here because putting a
+read-write production connection string into a scheduled-agent environment is the owner's call, and
+because the right credential is a **read-only Postgres role** — the review's own standard says
+read-only access is sufficient and preferred.
+
+### Corrections from the post-implementation audit
+
+A clean-room audit of the change set found three faults worth recording, all fixed before this entry
+was finished.
+
+**The shadow exit leg used the live constant, not the row's.** `shadowTracker` priced exits from
+`SHADOW_SLIPPAGE_PCT_PER_SIDE` while the entry leg had frozen the constant in force at insert. Any
+shadow position open across the 0.05 → 0.15 change would therefore have closed with a 0.15 exit
+against a 0.05 stamp, and `shadow_expectancy_restated` would have mis-restated **exactly the rows the
+restatement exists to make comparable**. The identity check could not have caught it: it only
+exercises rows whose two legs already share one constant. `shadowTracker` now reads
+`slippage_pct_per_side` back from the row. Six shadow positions were open at the time and all six are
+stamped 0.05, so all six were affected.
+
+**The basket had no lower time bound.** Migration 012 resolved each leg to the last snapshot at or
+before the trade's timestamp with nothing stopping it reaching arbitrarily far back. A watchlist
+symbol whose price feed stopped before a trade's window would resolve both legs to the same stale
+row, contribute an exact 0.00% return, and still count toward `basket_members` — pulling the basket
+toward zero and the excess toward raw P&L, on the metric this review makes primary. Migration 016
+bounds both legs at 24 hours, the same bound `REPLAY_MAX_PRICE_AGE_MS` already uses for the same
+decision. **No leg was actually stale** — 0 of 500 across the 25 closed trades — so the readout above
+is unchanged at −1.695%, which is the only kind of moment when a latent fault is cheap to correct.
+
+**Three rulings changed behaviour `pulse-spec.md` states verbatim** — the $1–$50 price band,
+`conviction < 0.4 → skip trade`, and seed 4's `> 30` — and the spec had not been amended. All three
+now carry an inline `*(owner decision, 2026-09-17)*` note in the spec's own established form.
+
+Migration 016 also corrects two `COMMENT ON` strings that this work made false in the database:
+`shadow_trades` no longer claims its rows cleared a conviction gate, and `slippage_pct_per_side` no
+longer describes 0.05 as current with a three-fill evidence base.
+
+**Two audit findings were accepted rather than fixed, and both are live.** A fresh database gets no
+`activate` row for squeeze-setup, because migration 014 runs before `runPipeline` has seeded
+`strategies` and correctly matches nothing there; `seeds.js` supplies `active` as the birth status
+instead, which is the same position seeds 1 and 3 have always been in. The consequence is that
+`reconcileFirability` could not restore squeeze-setup after an unfirability demotion on such a
+database — unreachable today, since its entry block gates on no source-specific mention feature, but
+it is a real asymmetry and it is written down rather than papered over. Separately, `trade_excess`
+benchmarks every historical trade against the watchlist **as it stands today**; that is correct only
+while `WATCHLIST` is a fixed constant, and the day a symbol is added or dropped it needs a membership
+history rather than a `CROSS JOIN`. Both facts are in the view's own schema comment.
+
+### 6 and 7 — not implemented, and why
+
+Both were sequenced behind item 1. Item 1 has now read out.
+
+**Item 6 (exit geometry) does not proceed.** Its condition was "only if item 1 shows entries are
+neutral-or-better vs basket". Excess expectancy is −1.93% on the review's 20 trades and −1.70% on all
+22. The entries are worse than the basket, so changing the exits re-arranges the loss without
+touching its sign — exactly the case the ruling said not to do.
+
+**Item 7 (inverted attention, replay only) is untouched but now better motivated.** Nothing was built
+for it: no replay experiments, no seed changes, no borrow path. The readout strengthens its premise
+rather than weakening it — a long-side entry block that selects for *quiet* names underperformed the
+basket by 1.7 pp per trade on a tape where every attention measurement reads bearish, which is the
+same finding from the other side. It awaits a ruling.
+
+---
+
+## PHASES 4 AND 5 — GATES PASSED 2026-09-17
+
+Both gates had stood **PARTIAL** since 2026-08-11 for one shared reason: the live conviction
+lifecycle — a real entry signal triggering a real Claude call and a real order carrying its
+conviction — could not run because the market had closed, and phase 5 inherited the deferral. The
+supervised run it was deferred to is moot. **The lifecycle has since executed organically, in
+production, 27 times.**
+
+Read from the live database at 2026-09-17 19:40 UTC:
+
+| measure | value |
+|---|---:|
+| entries with a non-NULL conviction on a real Alpaca order | **27** |
+| of those, carried through to close | **22** |
+| closed trades with an entry order, an exit order and an exit signal | **25** |
+| distinct symbols | 14 |
+| conviction range on those entries | 0.42 – 0.72 |
+| first entry | 2026-08-19 14:40 UTC |
+| last exit | 2026-09-17 14:45 UTC |
+
+The full round trip is evidenced end to end: `signals` row with a conviction from `claude-haiku-4-5`
+→ `trades` row → `alpaca_order_id` from a submitted order → `positionTracker` marking it → exit
+signal with the OR-joined conditions that fired → `exit_order_id` → `pnl_pct` → `statsRollup`. Not
+once under supervision; 27 times unattended, across a month, on 14 symbols.
+
+**Phase 5 closes on the same evidence.** Its own machinery was verified by audit on 2026-08-11 — no
+look-ahead in the price cursor or the feature rows, expectancy bit-for-bit identical to
+`statsRollup`'s, the vocabulary constraint enforced on the way back in through `evaluate()`, NULL
+never promoted, each retire/mutate/promote a single guarded CTE. Only the inherited lifecycle
+deferral kept it PARTIAL, and that deferral is now closed.
+
+**What passing these gates does not claim.** It does not claim the evolution loop has made a
+decision — it has not, and §2 of the month-one review explains in full why not. A gate on whether the
+machinery runs correctly end to end is a different question from whether it has had anything to do,
+and conflating them is how a deadlocked loop goes unnoticed for five scheduled cycles.
 
 ---
 

@@ -1,4 +1,3 @@
-import { SHADOW_SLIPPAGE_PCT_PER_SIDE } from '../config.js';
 import { pool } from '../db/pool.js';
 import { VOCABULARY, evaluate } from '../strategies/engine.js';
 
@@ -8,7 +7,8 @@ const POSITION_ONLY_FEATURES = new Set(['pnl_pct', 'hold_hours']);
 const FEATURE_COLUMNS = VOCABULARY.features.filter((feature) => !POSITION_ONLY_FEATURES.has(feature));
 
 const OPEN_SHADOW_SQL = `
-  SELECT t.id, t.strategy_id, t.symbol, t.qty, t.entry_price, t.entry_ts, s.params
+  SELECT t.id, t.strategy_id, t.symbol, t.qty, t.entry_price, t.entry_ts,
+         t.slippage_pct_per_side, s.params
   FROM shadow_trades t
   JOIN strategies s ON s.id = t.strategy_id
   WHERE t.status = 'open'
@@ -80,8 +80,13 @@ export async function shadowTracker() {
       continue;
     }
 
-    const exitPrice =
-      markPrice * (1 + (isShort ? SHADOW_SLIPPAGE_PCT_PER_SIDE : -SHADOW_SLIPPAGE_PCT_PER_SIDE) / 100);
+    // The row's own constant, not the current one. A shadow trade is a single counterfactual and
+    // must be priced under a single assumption on both legs, or shadow_trades.slippage_pct_per_side
+    // stops being true of the row and nothing can restate it exactly afterwards. A position open
+    // across a change to the constant is the only case where these differ, and it is the case that
+    // matters: the entry is already spent at the old number.
+    const slippage = Number(shadow.slippage_pct_per_side);
+    const exitPrice = markPrice * (1 + (isShort ? slippage : -slippage) / 100);
     const exitPnlPct = isShort
       ? ((entryPrice - exitPrice) / entryPrice) * 100
       : ((exitPrice - entryPrice) / entryPrice) * 100;
@@ -98,7 +103,7 @@ export async function shadowTracker() {
 
     closed += 1;
     console.log(
-      `[shadowTracker] shadow ${shadow.id} ${shadow.symbol} closed @ ${exitPrice.toFixed(4)} (mark ${markPrice}, ${SHADOW_SLIPPAGE_PCT_PER_SIDE}% adverse): pnl ${exitPnlPct.toFixed(2)}% after ${holdHours.toFixed(2)}h (${reason})`
+      `[shadowTracker] shadow ${shadow.id} ${shadow.symbol} closed @ ${exitPrice.toFixed(4)} (mark ${markPrice}, ${slippage}% adverse): pnl ${exitPnlPct.toFixed(2)}% after ${holdHours.toFixed(2)}h (${reason})`
     );
   }
 

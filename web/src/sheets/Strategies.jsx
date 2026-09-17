@@ -35,7 +35,7 @@ function ShadowCompare({ rows }) {
     },
     {
       key: 'shadow',
-      header: 'Shadow expectancy',
+      header: 'Shadow expectancy (as priced)',
       align: 'right',
       cell: (row) => (
         <Num
@@ -44,6 +44,24 @@ function ShadowCompare({ rows }) {
           tone={pnlTone(row.shadow_expectancy)}
           reason="no closed shadow trades"
         />
+      ),
+    },
+    {
+      key: 'shadow_restated',
+      header: 'Shadow expectancy (restated)',
+      align: 'right',
+      cell: (row) => (
+        <>
+          <Num
+            value={row.shadow_expectancy_restated}
+            format={signedPct}
+            tone={pnlTone(row.shadow_expectancy_restated)}
+            reason="no closed shadow trade carries both fill prices"
+          />
+          {row.shadow_restated_trades_n !== row.shadow_trades_n ? (
+            <span className="sub">over {row.shadow_restated_trades_n} with both fills</span>
+          ) : null}
+        </>
       ),
     },
     {
@@ -56,6 +74,19 @@ function ShadowCompare({ rows }) {
           format={signedPct}
           tone={pnlTone(row.real_expectancy)}
           reason="no closed real trades"
+        />
+      ),
+    },
+    {
+      key: 'real_excess',
+      header: 'Real excess expectancy',
+      align: 'right',
+      cell: (row) => (
+        <Num
+          value={row.real_excess_expectancy}
+          format={signedPct}
+          tone={pnlTone(row.real_excess_expectancy)}
+          reason="no closed real trade with a basket price"
         />
       ),
     },
@@ -145,6 +176,19 @@ export default function Strategies({ onClose }) {
       cell: (row) => <Num value={row.stats.win_rate} format={ratioAsPct} reason="no closed trades" />,
     },
     {
+      key: 'excess',
+      header: 'Excess expectancy',
+      align: 'right',
+      cell: (row) => (
+        <Num
+          value={row.stats.excess_expectancy}
+          format={signedPct}
+          tone={pnlTone(row.stats.excess_expectancy)}
+          reason="no closed trades with a basket price"
+        />
+      ),
+    },
+    {
       key: 'expectancy',
       header: 'Expectancy',
       align: 'right',
@@ -188,7 +232,7 @@ export default function Strategies({ onClose }) {
         <Section
           icon={GitBranch}
           title="The population"
-          note="Only active strategies are evaluated. Open one to see the exact conditions it enters and exits on."
+          note="Only active strategies are evaluated. Excess expectancy is the per-trade return over an equal-weight basket of the whole watchlist held across that trade's own window — it is the one that says whether the entries select anything, because plain expectancy moves with the tape. Open one to see the exact conditions it enters and exits on."
         >
           <Rows
             caption="Strategies with their closed-trade statistics"
@@ -207,9 +251,12 @@ export default function Strategies({ onClose }) {
           title="Shadow against real"
           note={
             <>
-              Entries a budget guard refused, priced with{' '}
-              <InlineNum>{shadow.data.slippage_pct_per_side}%</InlineNum> slippage per side. No order
-              was ever sent, and none of this counts toward any statistic above.
+              Entries a budget guard refused. No order was ever sent, and none of this counts toward
+              any statistic above. Every row keeps the slippage it was priced under, so{' '}
+              <b>as priced</b> is what the book recorded at the time and <b>restated</b> is that same
+              history re-priced at today's{' '}
+              <InlineNum>{shadow.data.slippage_pct_per_side}%</InlineNum> per side — the two differ
+              only where the constant has since moved.
             </>
           }
         >

@@ -11,12 +11,11 @@ import { evaluate } from '../strategies/engine.js';
 const NOTIONAL_USD = 1000;
 const CONVICTION_MODEL = 'claude-haiku-4-5';
 const CONVICTION_MAX_TOKENS = 300;
-const MIN_CONVICTION = 0.4;
 const MAX_OPEN_TRADES_PER_STRATEGY = 5;
 const ENTRY_WINDOW_OPEN_MINUTES = 9 * 60 + 45;
 const ENTRY_WINDOW_CLOSE_BUFFER_MS = 15 * 60 * 1000;
 const MIN_PRICE = 1;
-const MAX_PRICE = 50;
+const MAX_PRICE = 100;
 const MIN_AVG_VOLUME_30D = 500000;
 const ALLOWED_EXCHANGES = ['NYSE', 'NASDAQ', 'AMEX'];
 
@@ -131,6 +130,13 @@ function featureBag(row) {
   };
 }
 
+// Conviction is scored on every entry signal and gates nothing. The 0.4 threshold was dropped on
+// 2026-09-17 by owner decision: across the 60 scored signals that reached a closed trade,
+// corr(conviction, pnl) was 0.041 and Spearman 0.094; the score took 8 distinct values over all 110
+// scored signals with 44% of the mass on 0.72; and on forward returns the 39 the gate threw away
+// beat the 68 it let through at 24, 72 and 120 hours. It was not gating on information. The call
+// stays because those 110 scored signals are the dataset a better conviction question gets designed
+// against later, and that dataset only keeps growing if the score keeps being taken.
 async function convictionFor(strategyName, bag) {
   const reserved = await pool.query(RESERVE_CONVICTION_CALL_SQL, [MAX_CONVICTION_CALLS_PER_DAY]);
   if (reserved.rowCount === 0) {
@@ -161,7 +167,6 @@ async function recordShadowEntries(refused, ts, prices, shadowKeys) {
   let capDropped = 0;
   let unusable = 0;
   let duplicate = 0;
-  let belowConviction = 0;
 
   for (const { strategy, symbol, bag, conditions, blockedBy, refusal } of refused) {
     const key = `${strategy.id}:${symbol}`;
@@ -194,14 +199,6 @@ async function recordShadowEntries(refused, ts, prices, shadowKeys) {
       [strategy.id, symbol, ts, verdict.conviction, verdict.reasoning ?? conditions, bag]
     );
 
-    if (verdict.conviction < MIN_CONVICTION) {
-      belowConviction += 1;
-      console.log(
-        `[strategyRunner] shadow ${strategy.name} ${symbol}: signal ${inserted.rows[0].id} logged, conviction ${verdict.conviction} below ${MIN_CONVICTION}, no shadow entry (${refusal})`
-      );
-      continue;
-    }
-
     const isShort = strategy.params.side === 'short';
     const signalPrice = prices.get(symbol);
     const qty = Math.floor(NOTIONAL_USD / signalPrice);
@@ -227,7 +224,7 @@ async function recordShadowEntries(refused, ts, prices, shadowKeys) {
 
   if (capDropped > 0) await pool.query(RECORD_SHADOW_DROPS_SQL, [capDropped]);
 
-  return { recorded, capDropped, unusable, duplicate, belowConviction };
+  return { recorded, capDropped, unusable, duplicate };
 }
 
 export async function strategyRunner() {
@@ -345,13 +342,6 @@ export async function strategyRunner() {
       continue;
     }
 
-    if (verdict.conviction !== null && verdict.conviction < MIN_CONVICTION) {
-      console.log(
-        `[strategyRunner] ${strategy.name} ${symbol}: signal ${inserted.rows[0].id} logged, conviction ${verdict.conviction} below ${MIN_CONVICTION}, trade skipped (${conditions})`
-      );
-      continue;
-    }
-
     const trade = await pool.query(
       `INSERT INTO trades (strategy_id, symbol, entry_signal_id, qty, entry_ts, status)
        VALUES ($1, $2, $3, $4, $5, 'open') RETURNING id`,
@@ -374,6 +364,6 @@ export async function strategyRunner() {
   const shadow = await recordShadowEntries(refused, ts, prices, shadowKeys);
 
   console.log(
-    `[strategyRunner] ${candidates.length} entry signals fired, ${placed} placed, ${refused.length} refused by a budget guard → ${shadow.recorded} shadow entries recorded (${shadow.duplicate} already shadowed, ${shadow.belowConviction} below conviction, ${shadow.capDropped} dropped on the conviction cap, ${shadow.unusable} dropped with no usable conviction)`
+    `[strategyRunner] ${candidates.length} entry signals fired, ${placed} placed, ${refused.length} refused by a budget guard → ${shadow.recorded} shadow entries recorded (${shadow.duplicate} already shadowed, ${shadow.capDropped} dropped on the conviction cap, ${shadow.unusable} dropped with no usable conviction)`
   );
 }

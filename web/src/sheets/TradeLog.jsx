@@ -6,7 +6,7 @@ import { RailBlock, RailLine, RailNote } from '../Rail.jsx';
 import { useRail } from '../railContext.jsx';
 import { useStore } from '../store.jsx';
 import { Empty, ErrorBanner, InlineNum, NoData, Num, Pill, Section } from '../ui.jsx';
-import { duration, num, pct, pnlTone, price, qty, ratioAsPct, signedPct, stamp } from '../format.js';
+import { duration, isNum, num, pct, pnlTone, price, qty, ratioAsPct, signedPct, stamp } from '../format.js';
 
 const OUTCOME_TONE = { win: 'green', loss: 'red' };
 
@@ -122,6 +122,26 @@ export default function TradeLog({ onClose }) {
       align: 'right',
       cell: (trade) => (
         <Num value={trade.pnl_pct} format={signedPct} tone={pnlTone(trade.pnl_pct)} reason="no PnL recorded" />
+      ),
+    },
+    {
+      key: 'excess',
+      header: 'vs basket',
+      align: 'right',
+      cell: (trade) => (
+        <>
+          <Num
+            value={trade.excess_pnl_pct}
+            format={signedPct}
+            tone={pnlTone(trade.excess_pnl_pct)}
+            reason="no basket price over this window"
+          />
+          {isNum(trade.basket_pnl_pct) ? (
+            <span className="sub">
+              basket {signedPct(trade.basket_pnl_pct)} over {trade.basket_members}
+            </span>
+          ) : null}
+        </>
       ),
     },
     { key: 'qty', header: 'Qty', align: 'right', cell: (trade) => <Num value={trade.qty} format={qty} /> },

@@ -66,6 +66,14 @@ export default function StrategyDetail({ id, onClose }) {
           <RailLine label="Closed">
             <Num value={strategy?.stats.trades_n} format={(value) => num(value, 0)} reason="not loaded" />
           </RailLine>
+          <RailLine label="Excess exp.">
+            <Num
+              value={strategy?.stats.excess_expectancy}
+              format={signedPct}
+              tone={pnlTone(strategy?.stats.excess_expectancy)}
+              reason="no closed trades with a basket price"
+            />
+          </RailLine>
           <RailLine label="Expectancy">
             <Num
               value={strategy?.stats.expectancy}
@@ -137,6 +145,21 @@ export default function StrategyDetail({ id, onClose }) {
               </Stat>
               <Stat icon={ArrowDownRight} label="Avg loss">
                 <Num value={strategy.stats.avg_loss_pct} format={signedPct} tone="neg" reason="no losing trades yet" />
+              </Stat>
+              <Stat icon={Target} label="Excess expectancy">
+                <Num
+                  value={strategy.stats.excess_expectancy}
+                  format={signedPct}
+                  tone={pnlTone(strategy.stats.excess_expectancy)}
+                  reason="no closed trades with a basket price"
+                />
+              </Stat>
+              <Stat icon={Target} label="Beat the basket">
+                <Num
+                  value={strategy.stats.excess_trades_n ? strategy.stats.beat_basket_n : undefined}
+                  format={(value) => `${num(value, 0)} of ${num(strategy.stats.excess_trades_n, 0)}`}
+                  reason="no closed trades with a basket price"
+                />
               </Stat>
               <Stat icon={Target} label="Expectancy">
                 <Num

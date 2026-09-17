@@ -48,6 +48,14 @@ function DefaultRail() {
         <RailLine label="Win rate">
           <Num value={totals?.win_rate} format={ratioAsPct} reason="no closed trades" />
         </RailLine>
+        <RailLine label="Excess exp.">
+          <Num
+            value={totals?.excess_expectancy}
+            format={signedPct}
+            tone={pnlTone(totals?.excess_expectancy)}
+            reason="no closed trades with a basket price"
+          />
+        </RailLine>
         <RailLine label="Expectancy">
           <Num
             value={totals?.expectancy}

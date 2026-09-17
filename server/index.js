@@ -22,20 +22,56 @@ import { canFireUnder, seedsFor } from './strategies/seeds.js';
 const WINDOW_OPEN_MINUTES = 7 * 60 + 30;
 const WINDOW_CLOSE_MINUTES = 18 * 60;
 
+// A candidate is meant to be active if the loop promoted it or the owner activated it, and
+// nothing has retired it since. Owner activation counts here for the reason it exists at all: the
+// loop's promote is unreachable for a seed that has never been active, so treating a promote as
+// the only evidence of intent is what made the deadlock self-sealing.
 const FIRABILITY_SQL = `
   SELECT s.id, s.name, s.status, s.params,
          EXISTS (
            SELECT 1 FROM evolution_log p
-           WHERE p.strategy_id = s.id AND p.action = 'promote'
+           WHERE p.strategy_id = s.id AND p.action IN ('promote', 'activate')
              AND NOT EXISTS (
                SELECT 1 FROM evolution_log r
                WHERE r.strategy_id = s.id AND r.action = 'retire' AND r.ts > p.ts
              )
-         ) AS promoted_and_not_retired
+         ) AS meant_to_be_active
   FROM strategies s
   WHERE s.status IN ('active', 'candidate')
   ORDER BY s.id
 `;
+
+const RAISE_WARNING_SQL = `
+  INSERT INTO system_warnings (kind, subject, detail, first_seen, last_seen)
+  VALUES ($1, $2, $3, now(), now())
+  ON CONFLICT (kind, subject) DO UPDATE SET
+    detail = EXCLUDED.detail,
+    last_seen = EXCLUDED.last_seen,
+    first_seen = CASE
+      WHEN system_warnings.cleared_at IS NULL THEN system_warnings.first_seen
+      ELSE EXCLUDED.first_seen
+    END,
+    cleared_at = NULL
+`;
+
+const CLEAR_WARNINGS_SQL = `
+  UPDATE system_warnings SET cleared_at = now()
+  WHERE kind = $1 AND cleared_at IS NULL AND NOT (subject = ANY($2::text[]))
+`;
+
+// Raising a warning must never be able to fail the tick it warns about — the same rule
+// recordRejection and the hub heartbeat follow. A health surface that can take the pipeline down
+// is a worse failure than the condition it was reporting.
+async function publishWarnings(kind, standing) {
+  try {
+    for (const { subject, detail } of standing) {
+      await pool.query(RAISE_WARNING_SQL, [kind, subject, detail]);
+    }
+    await pool.query(CLEAR_WARNINGS_SQL, [kind, standing.map((warning) => warning.subject)]);
+  } catch (error) {
+    console.warn(`[pulse] ${kind} warnings could not be written to system_warnings: ${error.message}`);
+  }
+}
 
 function inMarketWindow(now) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -69,20 +105,25 @@ async function reconcileFirability(source) {
       console.warn(
         `[pulse] "${row.name}" (id ${row.id}) demoted active → candidate: its entry block gates on a mention feature that is NULL while ${source} is the primary mention source, so it is structurally unable to fire`
       );
-    } else if (row.status === 'candidate' && firable && row.promoted_and_not_retired && active < MAX_ACTIVE_STRATEGIES) {
+    } else if (row.status === 'candidate' && firable && row.meant_to_be_active && active < MAX_ACTIVE_STRATEGIES) {
       await pool.query("UPDATE strategies SET status = 'active' WHERE id = $1 AND status = 'candidate'", [row.id]);
       active += 1;
       console.warn(
-        `[pulse] "${row.name}" (id ${row.id}) restored candidate → active: the evolution loop promoted it and never retired it, and its entry block can fire again under ${source}`
+        `[pulse] "${row.name}" (id ${row.id}) restored candidate → active: it was promoted or activated and never retired, and its entry block can fire again under ${source}`
       );
     }
   }
 
+  const breached = [];
   if (active < MIN_ACTIVE_STRATEGIES) {
-    console.warn(
-      `[pulse] FLOOR BREACHED: ${active} active strategies, below the floor of ${MIN_ACTIVE_STRATEGIES}, with ${demoted} demoted on this tick for being unable to fire under ${source}. Spec §5.2 wins over the §6.2 floor here: the floor exists to stop the evolution loop retiring strategies that work, and a strategy that cannot fire is not one of those — held active it would inflate the active count and the evolution cap with a strategy that can never open a position. A demotion is reversible and reverses itself when the primary mention source changes back; a retirement never does.`
-    );
+    const detail =
+      `${active} active strategies, below the floor of ${MIN_ACTIVE_STRATEGIES}, with ${demoted} demoted on this tick for being unable to fire under ${source}. ` +
+      'Spec §5.2 wins over the §6.2 floor here: the floor exists to stop the evolution loop retiring strategies that work, and a strategy that cannot fire is not one of those — held active it would inflate the active count and the evolution cap with a strategy that can never open a position. ' +
+      'A demotion is reversible and reverses itself when the primary mention source changes back; a retirement never does.';
+    console.warn(`[pulse] FLOOR BREACHED: ${detail}`);
+    breached.push({ subject: 'active_strategies', detail });
   }
+  await publishWarnings('floor_breached', breached);
 }
 
 async function runPipeline(forceMarket) {
@@ -106,6 +147,7 @@ async function runPipeline(forceMarket) {
     );
   }
   await reconcileFirability(source);
+  await warnInactiveSeeds();
 
   const tasks = [redditIngest(), stocktwitsIngest(), apewisdomIngest()];
   if (forceMarket || inMarketWindow(new Date())) {
@@ -163,6 +205,13 @@ async function warnInactiveSeeds() {
       `[pulse] generation-0 strategy "${row.name}" is status=${row.status}; strategyRunner will not evaluate it`
     );
   }
+  await publishWarnings(
+    'inactive_seed',
+    rows.map((row) => ({
+      subject: row.name,
+      detail: `generation-0 strategy "${row.name}" is status=${row.status}; strategyRunner evaluates only active strategies, so it takes no trades and contributes nothing to the evolution loop's qualifier count`,
+    }))
+  );
 }
 
 if (process.argv[2] === 'tick') {
@@ -210,7 +259,6 @@ if (process.argv[2] === 'tick') {
   warnUnmappedWikiArticles();
   warnMissingHubKey();
   warnMissingPulseKey();
-  await warnInactiveSeeds();
 
   app.listen(PORT, () =>
     console.log(

@@ -91,7 +91,9 @@ The per-trade column was originally named `max_drawdown_pct` and measured from e
 - Max 3 day-trades per rolling 5 sessions (respect PDT from day one so results transfer to live)
 - Max 5 concurrent open trades per strategy; position size = fixed $1,000 notional per trade (paper acct starts at $100k — do NOT size up; small size keeps stats comparable)
 - No entries in first 15 min after open or last 15 min before close
-- Only tickers with price $1–$50, avg_volume_30d > 500k, exchange in (NYSE, NASDAQ, AMEX) — no OTC
+- Only tickers with price $1–$100, avg_volume_30d > 500k, exchange in (NYSE, NASDAQ, AMEX) — no OTC
+
+   *Price cap raised from $50 (owner decision, 2026-09-17).* The $50 figure was a day-one choice with no evidence under it, and it silently made seed #1 incapable of trading: all eight of its complete entry signals in the first month were ASTS at $60–75, every one excluded by this filter. ASTS and RKLB are legitimate watchlist members and $1,000 notional sizes fine at $75. `strategyRunner`'s `MAX_PRICE` and the evolution replay's `REPLAY_MAX_PRICE` must move together — the replay exists to score candidates against the universe the runner actually trades.
 
 ## 4. Features (computed per ticker per tick)
 
@@ -151,11 +153,15 @@ Each strategy = JSONB params interpreted by the same pure `engine.js` — evolut
    *Time bound added (owner decision, 2026-08-11).* The original had no max hold, so a position whose social spike never arrived could be held indefinitely. The exit-shape check §6 enforces on Claude's proposals exists because unbounded holds are how losers hide — **no strategy in the system, hand-written or evolved, may hold indefinitely**, and the seeds must meet the same bar the loop imposes on generated params. This strategy's thesis is buying quiet accumulation *before* the crowd arrives; if the crowd has not arrived in two weeks the thesis was wrong for that ticker and the position is dead capital. Stop and social-spike exit unchanged.
 
    Note the unit: `hold_hours` is wall-clock, and the other seeds encode "N days" as N × 24. Ten *trading* days spans two calendar weeks, so this bound is larger than a naive 10 × 24 would give.
-4. **fade-the-peak** — entry (short via Alpaca paper): exhaustion_score > high threshold AND **price_momentum_2d > 30**; exit: −10% from entry (profit) OR +8% (stop) OR 2 days
+4. **fade-the-peak** — entry (short via Alpaca paper): exhaustion_score > high threshold AND **price_momentum_2d > 10**; exit: −10% from entry (profit) OR +8% (stop) OR 2 days
+
+   *Threshold recalibrated from 30 (owner decision, 2026-09-17).* +30% in two days sat above the 99.9th percentile of 32,860 entry-window feature ticks and 0.14 pp under the observed maximum of 30.14; it fired once, ever. +10% is that tape's 95th percentile. This does not revive the seed and is not meant to: `exhaustion_score > 0.9` is itself a 0.049% event, the two legs are independent (corr 0.017), and on the 16 ticks meeting the exhaustion leg the highest 2-day move was 8.07%. Seed #4 remains `candidate` on the unchanged grounds below.
 
    *(owner decision, 2026-08-11)* `price_momentum_2d` was added to §4 specifically so this entry is expressible. Seed #4 nonetheless stays `status = 'candidate'` **regardless of its params**, until the short path is proven: there is no borrow check anywhere (`tickers` carries no `shortable` / `easy_to_borrow`), a rejected short sell throws out of `strategyRunner`'s loop and kills the rest of that tick, and the short path has never executed against the live broker. The evolution loop in §6 likewise may not promote a short candidate to `active` — a human activates it or nothing does.
 
-Every signal also gets a Claude call: given feature_snapshot, write 2–3 sentence reasoning + conviction 0–1. Conviction < 0.4 → log signal, skip trade (creates a counterfactual dataset for free).
+Every signal also gets a Claude call: given feature_snapshot, write 2–3 sentence reasoning + conviction 0–1. The score is logged on the signal and **gates nothing**.
+
+*Conviction gate dropped (owner decision, 2026-09-17).* The original rule was `conviction < 0.4 → log signal, skip trade`. Measured over the first month it was not gating on information: across the 60 scored signals that reached a closed trade, corr(conviction, pnl) = 0.041 and Spearman = 0.094; the score took 8 distinct values over all 110 scored signals with 44% of the mass on 0.72; and on forward returns the 39 signals the gate threw away beat the 68 it let through at 24, 72 and 120 hours. The call and the log stay — 110 scored signals with outcomes attached is the dataset a better conviction question gets designed against, and it only grows if the score keeps being taken.
 
 ## 6. Evolution loop (weekly)
 

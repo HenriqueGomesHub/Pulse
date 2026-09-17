@@ -62,7 +62,11 @@ export function seedsFor(primaryMentionSource) {
     {
       name: 'squeeze-setup',
       generation: 0,
-      status: 'candidate',
+      // Born candidate on 2026-08-11 because two of its three entry conditions were inexpressible;
+      // active by owner decision on 2026-09-17, once both had landed and a replay showed 439 full
+      // fires in 31 days. This is the birth value only — migration 014 is what moved the row that
+      // already existed, and the evolution_log 'activate' row there is the record of the decision.
+      status: 'active',
       params: {
         side: 'long',
         entry: {
@@ -113,7 +117,15 @@ export function seedsFor(primaryMentionSource) {
         entry: {
           all: [
             { feature: 'exhaustion_score', op: 'gt', value: 0.9 },
-            { feature: 'price_momentum_2d', op: 'gt', value: 30 },
+            // Recalibrated from 30 on 2026-09-17 against 32,860 entry-window feature ticks over the
+            // preceding 31 days. +30% in two days sat above the 99.9th percentile of that tape and
+            // 0.14 pp under its observed maximum of 30.14: it fired once, ever. +10% is the
+            // 95th percentile (1,726 ticks, 5.25%), which is what "ran up hard" means on this
+            // universe. It does not revive the seed, and is not meant to — see the BUILD_LOG entry:
+            // exhaustion_score is the mean of four booleans, so > 0.9 means all four, which
+            // happened on 16 of those ticks, and the two legs are independent (corr 0.017). Their
+            // joint rate is the product of two rare events either way.
+            { feature: 'price_momentum_2d', op: 'gt', value: 10 },
           ],
         },
         exit: {
