@@ -16,6 +16,111 @@ first unpassed gate or deferred verification. Never redo a passed phase.
 
 ---
 
+## THE REVIEW ROUTINE CANNOT RUN — THREE BLOCKERS, ONE OF THEM NEW — 2026-09-18
+
+The owner placed `DATABASE_URL` on the environment and rotated the password, and asked whether the
+routine could connect. **It cannot, and the credential turns out to be the least of it.** Three
+independent blockers, established by three runs tonight: an accidental dress rehearsal of the real
+routine, and two deliberate probes.
+
+### How we found out a month early
+
+Updating a routine appears to fire it. The prompt edit committed in `36149fc` went in at
+23:36:28 UTC; the monthly review routine fired at **23:39:43 UTC**, unscheduled, against a
+`next_run_at` of 2026-10-17. That was not intended and it is the most useful thing that happened
+tonight — it is the October run, executed in September, for free. **Worth remembering as a
+technique: to rehearse a routine, update it.**
+
+### Blocker 1 — the credential. RESOLVED, but it was never the hard part.
+
+At 23:39 `DATABASE_URL` was unset and the run said so. By 23:48 the owner had placed it and a
+dedicated probe confirmed it: host `altaria.proxy.rlwy.net:48382`, database `railway`.
+
+One observation from that run is worth keeping because it is the kind of thing that fools people.
+Its read failed with `connect ECONNREFUSED 127.0.0.1:5432`, and it refused to read that as evidence
+about Railway: **`pg` falls back to localhost defaults when the connection string is `undefined`**,
+so the error names loopback and establishes nothing at all about the remote host. A less careful
+reading would have filed "database refuses connections" as the finding.
+
+### Blocker 2 — egress. CONFIRMED BLOCKED, by two independent measurements.
+
+| target | result |
+|---|---|
+| `altaria.proxy.rlwy.net:48382` raw TCP | **timeout** (`pg` 15s connect timeout, and `/dev/tcp` exit 124) |
+| DNS for that host | resolves fine, 66.33.22.220 |
+| `pulse-production-7bcd.up.railway.app` HTTPS | **`curl: (56) CONNECT tunnel failed, response 403`** |
+| `wikimedia.org` HTTPS (control) | **same 403** |
+| `api.github.com/rate_limit` (control) | **HTTP 200** |
+
+So the sandbox runs behind a policy-enforcing egress proxy with an **allowlist**. GitHub is on it.
+Railway is not. Wikimedia is not — **exactly the two hosts the 2026-08-15 gate routine was refused,
+unchanged thirteen months of calendar and one month of project later.** That is the same policy,
+still in force, and it means both obvious remedies are dead: the database cannot be reached on its
+port, and the Pulse HTTPS API cannot be reached either.
+
+### Blocker 3 — THE NEW ONE. The routine cannot file what it writes.
+
+The rehearsal did everything right. It read the standard, read the worked example, read the build
+log, established it had no data, **refused to produce a verdict**, wrote
+`reviews/2026-09-17-NOT-EXECUTED.md` to the standard's specification, and committed it as `62fcbd9`.
+Then:
+
+```
+remote: Claude doesn't have GitHub access to HenriqueGomesHub/Pulse for your organization.
+fatal: unable to access 'https://github.com/HenriqueGomesHub/Pulse/': The requested URL returned error: 403
+```
+
+It retried once, confirmed the denial stands, and proved the denial is **scoped to writes**:
+`git ls-remote origin` succeeded over the same transport and returned `36149fc`, and a GitHub MCP
+read of `reviews/STANDARD.md` succeeded in the same session. Reads work. Writes are refused at the
+App-installation level.
+
+**It then declined to route around it** — no `create_or_update_file`, no `push_files`, no direct API
+call — on the grounds that the brief says to quote a refused push rather than work around it, and
+that an installation-level denial would refuse those paths identically. It delivered the artifact to
+the owner as a file instead, and fired a push notification.
+
+That is the behaviour the standard asks for, and it leaves the system in a precise and unacceptable
+state: **the routine can diagnose Pulse and cannot file the diagnosis.**
+
+### The shape of this failure is the project's founding failure, one level up
+
+Pulse's month-one finding was that it kept perfect records and nobody read them. The review exists
+to be the reader. Tonight the reader produced a correct, complete, standard-conforming refusal — and
+**that refusal could not be committed to the repository.** Its container was ephemeral. Had nobody
+gone looking at the run log, the only durable trace would have been a file attachment and a phone
+notification.
+
+The 2026-08-15 routine failed the same way: it hit a 403 egress policy, had read-only GitHub access,
+correctly titled its output `GATE VERIFICATION NOT EXECUTED`, could not publish it, and cost three
+days of unnoticed delay. **Both routines degraded gracefully. Both were unreadable. That is not two
+incidents, it is one unfixed condition.**
+
+### What the environment needs — all three, and the order matters
+
+1. **Egress to the database host**, or the whole approach is void. `altaria.proxy.rlwy.net:48382`
+   must be reachable on TCP from the routine's environment. Allowlisting the HTTPS app host instead
+   is not equivalent and would not help, because `pg` opens a raw socket that does not traverse the
+   HTTPS proxy.
+2. **GitHub write access** for the routine — `github.com/apps/claude/installations/select_target`,
+   per the error's own instruction. Without it the routine is a diagnostic that cannot be filed, and
+   fixing blocker 1 or 2 alone produces a better-informed silence.
+3. **The credential**, already done.
+
+**If egress cannot be granted, the cloud routine is the wrong host for this job** and the review
+should run where the database is reachable — the owner's machine on a schedule, which has both
+network access and a working push path. That is a ruling, not something to assume.
+
+### One artifact to rescue
+
+`reviews/2026-09-17-NOT-EXECUTED.md`, 291 lines, was delivered to the owner as a session file
+(`ad1d4f03-915f-4716-be03-9ec403711289`) and exists nowhere else. It contains the rehearsal's own
+ranked recommendations, written before this entry and independently of it. Worth saving into
+`reviews/` if the owner still has it; it is the first artifact the review process ever produced, and
+it is a refusal.
+
+---
+
 ## THE CLOCK ARTEFACT — FIXED, GATED, SEED 3 SWITCHED — 2026-09-18
 
 `rel_volume_zscore` was substantially a clock. It is corrected by a new column, `rel_volume_zscore_v2`,
